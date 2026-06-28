@@ -145,6 +145,10 @@ public sealed class SetupLink
     }
 }
 
-public sealed record SetupConfiguration(string PlaylistUrl, string? EpgUrl);
+public sealed record SetupConfiguration(
+    string PlaylistUrl,
+    string? EpgUrl,
+    IReadOnlyList<string>? ExcludedCategories,
+    IReadOnlyList<string>? SelectedCategories);
 
 public sealed record SetupSession(string SessionId, string RemoteUrl);

@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m3u-gateway
+  namespace: m3u-playlist-player
+  labels:
+    app: m3u-gateway
+spec:
+  revisionHistoryLimit: 2
+  replicas: 1
+  selector:
+    matchLabels:
+      app: m3u-gateway
+  template:
+    metadata:
+      labels:
+        app: m3u-gateway
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: gateway
+          image: m3u-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5055
+              name: http
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: Gateway__Urls
+              value: http://0.0.0.0:5055
+            - name: HOME
+              value: /data
+          envFrom:
+            - secretRef:
+                name: m3u-gateway-secrets
+          volumeMounts:
+            - name: gateway-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 768Mi
+              cpu: 500m
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: 5055
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 5055
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: gateway-data
+          persistentVolumeClaim:
+            claimName: m3u-gateway-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: m3u-gateway-service
+  namespace: m3u-playlist-player
+spec:
+  type: ClusterIP
+  selector:
+    app: m3u-gateway
+  ports:
+    - protocol: TCP
+      port: 5055
+      targetPort: 5055
+      name: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: m3u-gateway-data
+  namespace: m3u-playlist-player
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

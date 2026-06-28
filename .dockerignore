@@ -1,0 +1,12 @@
+.git
+.github
+.vs
+.codex
+.agents
+bin
+obj
+**/bin
+**/obj
+logs
+updates
+webos-companion/*.ipk

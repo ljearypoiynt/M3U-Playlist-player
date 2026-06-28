@@ -23,11 +23,15 @@ var state = {
   serverUrl: localStorage.getItem('serverUrl') || 'http://192.168.50.99:5055',
   playlistUrl: localStorage.getItem('playlistUrl') || '',
   epgUrl: localStorage.getItem('epgUrl') || '',
-  sessionId: null,
-  remoteUrl: '',
+  sessionId: localStorage.getItem('sessionId') || null,
+  remoteUrl: localStorage.getItem('remoteUrl') || '',
   playbackMode: getDefaultPlaybackMode(),
   selectedListId: localStorage.getItem('selectedListId') || 'all',
   excludedCategories: readJsonStorage('excludedCategories', {
+    live: [],
+    movies: []
+  }),
+  selectedCategories: readJsonStorage('selectedCategories', {
     live: [],
     movies: []
   }),
@@ -51,8 +55,11 @@ var state = {
   remoteSequence: 0,
   remotePollTimer: null,
   setupId: null,
+  setupTab: 'connection',
   setupPollTimer: null,
   remoteQrTrigger: null,
+  editingListId: null,
+  listEditorReturnFocus: null,
   editorItems: [],
   editorHasMore: false,
   editorIsLoading: false,
@@ -77,6 +84,7 @@ var els = {
   newList: document.getElementById('newList'),
   openSetup: document.getElementById('openSetup'),
   closeSetup: document.getElementById('closeSetup'),
+  newSession: document.getElementById('newSession'),
   saveSetup: document.getElementById('saveSetup'),
   startPhoneSetup: document.getElementById('startPhoneSetup'),
   showRemoteQrMain: document.getElementById('showRemoteQrMain'),
@@ -85,19 +93,26 @@ var els = {
   remoteQr: document.getElementById('remoteQr'),
   remoteQrText: document.getElementById('remoteQrText'),
   setupScreen: document.getElementById('setupScreen'),
+  setupTabButtons: document.querySelectorAll('.setup-tab'),
+  setupPanels: document.querySelectorAll('.setup-tab-panel'),
   setupQr: document.getElementById('setupQr'),
   setupUrlText: document.getElementById('setupUrlText'),
-  setupCategoryStep: document.getElementById('setupCategoryStep'),
   setupCategoryList: document.getElementById('setupCategoryList'),
   setupCategorySummary: document.getElementById('setupCategorySummary'),
   selectAllCategories: document.getElementById('selectAllCategories'),
   clearCategories: document.getElementById('clearCategories'),
+  backToPlaylistSetup: document.getElementById('backToPlaylistSetup'),
   finishCategorySetup: document.getElementById('finishCategorySetup'),
+  setupNewList: document.getElementById('setupNewList'),
+  setupListRows: document.getElementById('setupListRows'),
+  setupListSummary: document.getElementById('setupListSummary'),
+  closeSetupFromLists: document.getElementById('closeSetupFromLists'),
   listEditorScreen: document.getElementById('listEditorScreen'),
   closeListEditor: document.getElementById('closeListEditor'),
   cancelList: document.getElementById('cancelList'),
   saveList: document.getElementById('saveList'),
   createList: document.getElementById('createList'),
+  listEditorTitle: document.getElementById('listEditorTitle'),
   listName: document.getElementById('listName'),
   listSearch: document.getElementById('listSearch'),
   listSelectedCount: document.getElementById('listSelectedCount'),
@@ -126,6 +141,14 @@ els.openSetup.addEventListener('click', function () {
 els.closeSetup.addEventListener('click', function () {
   closeSetupScreen();
 });
+for (var setupTabIndex = 0; setupTabIndex < els.setupTabButtons.length; setupTabIndex += 1) {
+  els.setupTabButtons[setupTabIndex].addEventListener('click', function (event) {
+    setSetupTab(event.currentTarget.dataset.setupTab);
+  });
+}
+els.newSession.addEventListener('click', function () {
+  createNewSessionFromSetup();
+});
 els.saveSetup.addEventListener('click', function () {
   connect().then(function () {
     if (state.sessionId) {
@@ -153,6 +176,32 @@ els.moviesMode.addEventListener('click', function () {
 els.newList.addEventListener('click', function () {
   openListEditor();
 });
+els.setupNewList.addEventListener('click', function () {
+  openListEditor(null, els.setupNewList);
+});
+els.closeSetupFromLists.addEventListener('click', function () {
+  closeSetupScreen();
+});
+els.setupListRows.addEventListener('click', function (event) {
+  var action = event.target && event.target.dataset ? event.target.dataset.action : '';
+  var listId = event.target && event.target.dataset ? event.target.dataset.listId : '';
+  var list;
+
+  if (!action || !listId) {
+    return;
+  }
+
+  list = findCuratedList(listId);
+  if (!list) {
+    return;
+  }
+
+  if (action === 'edit') {
+    openListEditor(list, event.target);
+  } else if (action === 'delete') {
+    deleteCuratedList(list, event.target);
+  }
+});
 els.curatedListSelect.addEventListener('change', function () {
   selectCuratedList(els.curatedListSelect.value);
 });
@@ -164,6 +213,9 @@ els.selectAllCategories.addEventListener('click', function () {
 });
 els.clearCategories.addEventListener('click', function () {
   setAllSetupCategories(false);
+});
+els.backToPlaylistSetup.addEventListener('click', function () {
+  setSetupTab('connection');
 });
 els.finishCategorySetup.addEventListener('click', function () {
   saveCategorySetup();
@@ -301,8 +353,6 @@ function connect() {
   state.serverUrl = els.serverUrl.value.trim().replace(/\/$/, '');
   state.playlistUrl = els.playlistUrl.value.trim();
   state.epgUrl = els.epgUrl.value.trim();
-  state.sessionId = null;
-  state.remoteUrl = '';
   updateConnectionSummary();
   localStorage.setItem('serverUrl', state.serverUrl);
   localStorage.setItem('playlistUrl', state.playlistUrl);
@@ -340,7 +390,10 @@ function createSession() {
     deviceName: 'LG TV',
     playlistUrl: state.playlistUrl,
     epgUrl: state.epgUrl || null,
-    playbackMode: state.playbackMode
+    playbackMode: state.playbackMode,
+    excludedCategories: state.excludedCategories.live || [],
+    selectedCategories: state.selectedCategories.live || [],
+    requestedSessionId: state.sessionId || null
   }).then(function (session) {
     state.sessionId = session.sessionId || session.SessionId;
     state.remoteUrl = session.remoteUrl || session.RemoteUrl || '';
@@ -350,23 +403,69 @@ function createSession() {
       throw new Error('Desktop did not return a session id.');
     }
 
+    localStorage.setItem('sessionId', state.sessionId);
+    localStorage.setItem('remoteUrl', state.remoteUrl);
     publishSetupSession();
   });
 }
 
-function openSetupScreen() {
+function createNewSessionFromSetup() {
+  clearSavedSession();
+  stopRemotePolling();
+  stopSetupPolling();
+  state.setupId = null;
+  els.setupQr.removeAttribute('src');
+  els.setupUrlText.textContent = 'New session ready. Save & connect, or scan a fresh phone setup link.';
+  setStatus('New session will be created on the next save.');
+  startPhoneSetup();
+}
+
+function clearSavedSession() {
+  state.sessionId = null;
+  state.remoteUrl = '';
+  state.remoteSequence = 0;
+  localStorage.removeItem('sessionId');
+  localStorage.removeItem('remoteUrl');
+  updateConnectionSummary();
+}
+
+function openSetupScreen(tabName) {
   els.setupScreen.hidden = false;
-  if (!state.setupId && !els.setupQr.getAttribute('src')) {
-    startPhoneSetup();
-  }
+  setSetupTab(tabName || 'connection');
+  startPhoneSetup();
   window.setTimeout(function () {
-    els.startPhoneSetup.focus();
+    var activeTab = document.querySelector('.setup-tab.active');
+    if (activeTab) {
+      activeTab.focus();
+    } else {
+      els.startPhoneSetup.focus();
+    }
   }, 50);
 }
 
 function closeSetupScreen() {
   els.setupScreen.hidden = true;
-  els.setupCategoryStep.hidden = true;
+}
+
+function setSetupTab(tabName) {
+  var safeTab = tabName || 'connection';
+  var index;
+
+  state.setupTab = safeTab;
+
+  for (index = 0; index < els.setupTabButtons.length; index += 1) {
+    els.setupTabButtons[index].classList.toggle('active', els.setupTabButtons[index].dataset.setupTab === safeTab);
+  }
+
+  for (index = 0; index < els.setupPanels.length; index += 1) {
+    els.setupPanels[index].hidden = els.setupPanels[index].dataset.setupPanel !== safeTab;
+  }
+
+  if (safeTab === 'categories') {
+    loadCategories().then(renderCategorySetup);
+  } else if (safeTab === 'favourites') {
+    loadCuratedLists().then(renderSetupLists);
+  }
 }
 
 function showRemoteQr(trigger) {
@@ -401,6 +500,7 @@ function startPhoneSetup() {
   state.serverUrl = els.serverUrl.value.trim().replace(/\/$/, '');
   localStorage.setItem('serverUrl', state.serverUrl);
   stopSetupPolling();
+  state.setupId = null;
   setStatus('Creating phone setup link...');
   els.setupQr.removeAttribute('src');
   els.setupUrlText.textContent = 'Creating setup link...';
@@ -447,18 +547,49 @@ function pollPhoneSetup() {
 }
 
 function applyPhoneSetup(configuration) {
+  var excludedCategories = configuration.excludedCategories !== undefined
+    ? configuration.excludedCategories
+    : configuration.ExcludedCategories;
+  var selectedCategories = configuration.selectedCategories !== undefined
+    ? configuration.selectedCategories
+    : configuration.SelectedCategories;
   stopSetupPolling();
   state.playlistUrl = configuration.playlistUrl || configuration.PlaylistUrl || '';
   state.epgUrl = configuration.epgUrl || configuration.EpgUrl || '';
+  state.kind = 'live';
+  state.selectedListId = 'all';
+  els.liveMode.classList.add('active');
+  els.moviesMode.classList.remove('active');
+  updateGuideTabs();
   els.playlistUrl.value = state.playlistUrl;
   els.epgUrl.value = state.epgUrl;
+  els.search.value = '';
+  els.categorySelect.value = '';
   localStorage.setItem('playlistUrl', state.playlistUrl);
   localStorage.setItem('epgUrl', state.epgUrl);
+  localStorage.setItem('selectedListId', state.selectedListId);
+  if (Array.isArray(excludedCategories)) {
+    state.excludedCategories.live = excludedCategories;
+    localStorage.setItem('excludedCategories', JSON.stringify(state.excludedCategories));
+  }
+  if (Array.isArray(selectedCategories)) {
+    state.selectedCategories.live = selectedCategories;
+    localStorage.setItem('selectedCategories', JSON.stringify(state.selectedCategories));
+  }
   setStatus('Phone setup saved. Connecting...');
   connect().then(function () {
-    if (state.sessionId) {
+    if (state.sessionId && !Array.isArray(excludedCategories)) {
       startCategorySetup();
+      return;
     }
+
+    closeSetupScreen();
+    setStatus('Phone setup applied. Loading guide...');
+    loadCategories()
+      .then(loadMedia)
+      .catch(function (error) {
+        setStatus('Guide refresh failed: ' + error.message);
+      });
   });
 }
 
@@ -565,8 +696,12 @@ function renderCategoryDropdown() {
 
 function getKeptCategories() {
   var excluded = getExcludedCategorySet(state.kind);
+  var selected = getSelectedCategorySet(state.kind);
+  var hasSelected = (state.selectedCategories[state.kind] || []).length > 0;
   return (state.categories[state.kind] || []).filter(function (category) {
-    return !excluded[category.toLowerCase()];
+    return hasSelected
+      ? !!selected[category.toLowerCase()]
+      : !excluded[category.toLowerCase()];
   });
 }
 
@@ -582,23 +717,38 @@ function getExcludedCategorySet(kind) {
   return set;
 }
 
+function getSelectedCategorySet(kind) {
+  var set = {};
+  var selected = state.selectedCategories[kind] || [];
+  var index;
+
+  for (index = 0; index < selected.length; index += 1) {
+    set[String(selected[index]).toLowerCase()] = true;
+  }
+
+  return set;
+}
+
 function startCategorySetup() {
   return loadCategories().then(function () {
     renderCategorySetup();
-    els.setupCategoryStep.hidden = false;
-    if (els.setupCategoryList.firstElementChild) {
-      els.setupCategoryList.firstElementChild.focus();
-    }
+    openSetupScreen('categories');
+    els.setupCategoryList.focus();
   });
 }
 
 function renderCategorySetup() {
   var categories = state.categories[state.kind] || [];
   var excluded = getExcludedCategorySet(state.kind);
+  var selected = getSelectedCategorySet(state.kind);
+  var hasSelected = (state.selectedCategories[state.kind] || []).length > 0;
+  var categoryRows = [];
   var kept = 0;
   var index;
+  var isChecked;
 
   els.setupCategoryList.innerHTML = '';
+  els.setupCategoryList.scrollTop = 0;
 
   if (categories.length === 0) {
     els.setupCategoryList.innerHTML = '<p class="curated-empty">No categories were returned by the playlist.</p>';
@@ -607,10 +757,30 @@ function renderCategorySetup() {
   }
 
   for (index = 0; index < categories.length; index += 1) {
-    if (!excluded[categories[index].toLowerCase()]) {
+    isChecked = hasSelected
+      ? !!selected[categories[index].toLowerCase()]
+      : !excluded[categories[index].toLowerCase()];
+    if (isChecked) {
       kept += 1;
     }
-    appendSetupCategory(categories[index], !excluded[categories[index].toLowerCase()]);
+    categoryRows.push({
+      name: categories[index],
+      checked: isChecked
+    });
+  }
+
+  categoryRows.sort(function (left, right) {
+    if (left.checked !== right.checked) {
+      return left.checked ? -1 : 1;
+    }
+
+    return left.name.localeCompare(right.name, undefined, {
+      sensitivity: 'base'
+    });
+  });
+
+  for (index = 0; index < categoryRows.length; index += 1) {
+    appendSetupCategory(categoryRows[index].name, categoryRows[index].checked);
   }
 
   els.setupCategorySummary.textContent = kept + ' of ' + categories.length + ' categories selected.';
@@ -670,19 +840,40 @@ function updateSetupCategorySummary() {
 function saveCategorySetup() {
   var inputs = els.setupCategoryList.querySelectorAll('input[type="checkbox"]');
   var excluded = [];
+  var selected = [];
   var index;
 
   for (index = 0; index < inputs.length; index += 1) {
-    if (!inputs[index].checked) {
+    if (inputs[index].checked) {
+      selected.push(inputs[index].value);
+    } else {
       excluded.push(inputs[index].value);
     }
   }
 
   state.excludedCategories[state.kind] = excluded;
+  state.selectedCategories[state.kind] = selected;
   localStorage.setItem('excludedCategories', JSON.stringify(state.excludedCategories));
+  localStorage.setItem('selectedCategories', JSON.stringify(state.selectedCategories));
   renderCategoryDropdown();
   closeSetupScreen();
-  loadMedia();
+  saveSessionExcludedCategories(state.kind, excluded, selected)
+    .then(loadMedia)
+    .catch(function () {
+      loadMedia();
+    });
+}
+
+function saveSessionExcludedCategories(kind, excludedCategories, selectedCategories) {
+  if (!state.sessionId) {
+    return Promise.resolve();
+  }
+
+  return postJson(apiPath('/excluded-categories'), {
+    kind: kind,
+    excludedCategories: excludedCategories || [],
+    selectedCategories: selectedCategories || []
+  });
 }
 
 function loadCuratedLists() {
@@ -753,6 +944,7 @@ function renderCuratedLists() {
     emptyOption.value = 'all';
     emptyOption.textContent = 'All channels';
     els.curatedListSelect.appendChild(emptyOption);
+    renderSetupLists();
     return;
   }
 
@@ -761,6 +953,7 @@ function renderCuratedLists() {
   }
 
   els.curatedListSelect.value = findCuratedList(state.selectedListId) ? state.selectedListId : 'all';
+  renderSetupLists();
 }
 
 function appendCuratedListOption(list) {
@@ -794,7 +987,78 @@ function getSelectedListName() {
   return list ? list.name : state.kind === 'live' ? 'All channels' : 'All movies';
 }
 
-function openListEditor() {
+function renderSetupLists() {
+  var customLists = [];
+  var index;
+
+  if (!els.setupListRows) {
+    return;
+  }
+
+  els.setupListRows.innerHTML = '';
+
+  if (!state.sessionId) {
+    els.setupListRows.innerHTML = '<p class="curated-empty">Connect your playlist before creating favourites lists.</p>';
+    els.setupListSummary.textContent = 'Connect first to manage lists.';
+    return;
+  }
+
+  for (index = 0; index < state.curatedLists.length; index += 1) {
+    if (!state.curatedLists[index].builtIn) {
+      customLists.push(state.curatedLists[index]);
+    }
+  }
+
+  if (customLists.length === 0) {
+    els.setupListRows.innerHTML = '<p class="curated-empty">No favourites lists yet. Add a list to start curating channels.</p>';
+    els.setupListSummary.textContent = 'No custom lists yet.';
+    return;
+  }
+
+  for (index = 0; index < customLists.length; index += 1) {
+    appendSetupListRow(customLists[index]);
+  }
+
+  els.setupListSummary.textContent = customLists.length + ' custom list' + (customLists.length === 1 ? '' : 's') + ' saved.';
+}
+
+function appendSetupListRow(list) {
+  var row = document.createElement('article');
+  var body = document.createElement('div');
+  var title = document.createElement('strong');
+  var meta = document.createElement('span');
+  var actions = document.createElement('div');
+  var edit = document.createElement('button');
+  var remove = document.createElement('button');
+
+  row.className = 'setup-list-row';
+  body.className = 'setup-list-body';
+  actions.className = 'setup-list-actions';
+  title.textContent = list.name;
+  meta.textContent = (typeof list.count === 'number' ? list.count : 0) + ' channel' + (list.count === 1 ? '' : 's');
+
+  edit.className = 'mode';
+  edit.type = 'button';
+  edit.textContent = 'Edit';
+  edit.dataset.action = 'edit';
+  edit.dataset.listId = list.id;
+
+  remove.className = 'mode danger-action';
+  remove.type = 'button';
+  remove.textContent = 'Delete';
+  remove.dataset.action = 'delete';
+  remove.dataset.listId = list.id;
+
+  body.appendChild(title);
+  body.appendChild(meta);
+  actions.appendChild(edit);
+  actions.appendChild(remove);
+  row.appendChild(body);
+  row.appendChild(actions);
+  els.setupListRows.appendChild(row);
+}
+
+function openListEditor(list, returnFocus) {
   if (!state.sessionId) {
     setStatus('Connect first, then create lists.');
     els.openSetup.focus();
@@ -802,11 +1066,17 @@ function openListEditor() {
   }
 
   state.editorSelectedIds = {};
+  state.editingListId = list && !list.builtIn ? list.id : null;
+  state.listEditorReturnFocus = returnFocus || els.newList;
   state.editorItems = [];
   state.editorHasMore = false;
   state.editorRequestId += 1;
-  els.listName.value = '';
+  els.listName.value = list && list.name ? list.name : '';
   els.listSearch.value = '';
+  setEditorSelectedIds(list && list.itemIds);
+  els.listEditorTitle.textContent = state.editingListId ? 'Edit favourites list' : 'New favourites list';
+  els.createList.textContent = state.editingListId ? 'Save changes' : 'Create list';
+  els.saveList.textContent = state.editingListId ? 'Save changes' : 'Save list';
   updateEditorSelectionCount();
   els.listEditorScreen.hidden = false;
   loadEditorMedia();
@@ -816,8 +1086,29 @@ function openListEditor() {
 }
 
 function closeListEditor() {
+  var target = state.listEditorReturnFocus || els.newList;
+
   els.listEditorScreen.hidden = true;
-  els.newList.focus();
+  state.editingListId = null;
+  state.listEditorReturnFocus = null;
+  if (target && target.focus) {
+    target.focus();
+  }
+}
+
+function setEditorSelectedIds(ids) {
+  var index;
+
+  state.editorSelectedIds = {};
+  if (!Array.isArray(ids)) {
+    return;
+  }
+
+  for (index = 0; index < ids.length; index += 1) {
+    if (ids[index]) {
+      state.editorSelectedIds[String(ids[index])] = true;
+    }
+  }
 }
 
 function loadEditorMedia() {
@@ -967,11 +1258,16 @@ function saveCuratedList() {
     return;
   }
 
-  postJson(apiPath('/curated-lists'), {
+  var request = {
     kind: state.kind,
     name: name,
     itemIds: ids
-  })
+  };
+  var saveRequest = state.editingListId
+    ? putJson(apiPath('/curated-lists/' + encodeURIComponent(state.editingListId)), request)
+    : postJson(apiPath('/curated-lists'), request);
+
+  saveRequest
     .then(function (result) {
       var list = result.list || result.List;
       if (list && list.id) {
@@ -987,6 +1283,37 @@ function saveCuratedList() {
     })
     .catch(function (error) {
       setStatus('Could not save list: ' + error.message);
+    });
+}
+
+function deleteCuratedList(list, trigger) {
+  if (!list || list.builtIn) {
+    setStatus('Built-in lists cannot be deleted.');
+    return;
+  }
+
+  setStatus('Deleting ' + list.name + '...');
+  deleteJson(apiPath('/curated-lists/' + encodeURIComponent(list.id) + '?kind=' + encodeURIComponent(state.kind)))
+    .then(function () {
+      if (state.selectedListId === list.id) {
+        state.selectedListId = 'all';
+        localStorage.setItem('selectedListId', state.selectedListId);
+      }
+
+      return loadCuratedLists();
+    })
+    .then(function () {
+      renderSetupLists();
+      setStatus('List deleted.');
+      return loadMedia();
+    })
+    .then(function () {
+      if (trigger && trigger.focus) {
+        trigger.focus();
+      }
+    })
+    .catch(function (error) {
+      setStatus('Could not delete list: ' + error.message);
     });
 }
 
@@ -1026,15 +1353,9 @@ function loadMediaPage(skip, requestId) {
     skip: String(skip),
     limit: String(pageSize)
   });
-  var excluded = state.excludedCategories[state.kind] || [];
-  var index;
 
   if (state.selectedListId && state.selectedListId !== 'all') {
     params.set('list', state.selectedListId);
-  }
-
-  for (index = 0; index < excluded.length; index += 1) {
-    params.append('excludeGroup', excluded[index]);
   }
 
   state.isLoading = true;
@@ -1842,12 +2163,33 @@ function fetchJson(path) {
 }
 
 function postJson(path, body) {
-  return fetch(state.serverUrl + path, {
-    method: 'POST',
+  return sendJson(path, 'POST', body);
+}
+
+function putJson(path, body) {
+  return sendJson(path, 'PUT', body);
+}
+
+function deleteJson(path) {
+  return sendJson(path, 'DELETE', null);
+}
+
+function sendJson(path, method, body) {
+  var options = {
+    method: method,
     headers: {
       'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body || {})
+    }
+  };
+
+  if (body !== null && body !== undefined) {
+    options.body = JSON.stringify(body || {});
+  }
+
+  return fetch(state.serverUrl + path, {
+    method: options.method,
+    headers: options.headers,
+    body: options.body
   })
     .then(function (response) {
       if (!response.ok) {

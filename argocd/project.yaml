@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: m3u-playlist-player-project
+  namespace: argocd
+  finalizers:
+    - argoproj.io/resources-finalizer
+spec:
+  description: M3U Playlist Player gateway
+
+  destinations:
+    - namespace: m3u-playlist-player
+      server: https://kubernetes.default.svc
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  sourceRepos:
+    - https://github.com/ljearypoiynt/M3U-Playlist-player.git
+
+  orphanedResources:
+    warn: true

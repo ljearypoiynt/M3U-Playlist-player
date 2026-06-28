@@ -3,17 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090909">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="M3U Remote">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>M3U TV Remote</title>
+  <link id="remoteManifest" rel="manifest" href="/remote/manifest.webmanifest">
   <link rel="stylesheet" href="/remote/styles.css">
 </head>
 <body>
   <main class="remote-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Local TV Remote</p>
-        <h1>M3U Controller</h1>
+        <h2>IPTV Remote</h2>
       </div>
-      <span id="statusPill" class="status-pill">Connecting</span>
+      <div class="top-actions">
+        <button id="installApp" class="status-pill install-button" type="button" hidden>Install</button>
+        <span id="statusPill" class="status-pill">Connecting</span>
+      </div>
     </header>
 
     <section class="control-panel" aria-label="Remote controls">
@@ -34,6 +41,13 @@
         </div>
         <select id="curatedListSelect"></select>
       </section>
+
+      <label class="select-wrap">
+        <span>Category</span>
+        <select id="categorySelect">
+          <option value="">All kept categories</option>
+        </select>
+      </label>
 
       <div class="playback-row">
         <button id="stop" class="stop" type="button">Stop TV</button>

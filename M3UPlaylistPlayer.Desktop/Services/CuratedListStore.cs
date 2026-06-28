@@ -54,6 +54,27 @@ public sealed class CuratedListStore
         }
     }
 
+    public void Delete(XtreamSettings settings, MediaKind kind, string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        var key = BuildKey(settings);
+        var safeKind = kind.ToString().ToLowerInvariant();
+
+        lock (_lock)
+        {
+            var lists = Load()
+                .Where(existing => !string.Equals(existing.AccountKey, key, StringComparison.OrdinalIgnoreCase) ||
+                                   !string.Equals(existing.Kind, safeKind, StringComparison.OrdinalIgnoreCase) ||
+                                   !string.Equals(existing.Id, id, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            File.WriteAllText(_path, JsonSerializer.Serialize(lists, JsonOptions));
+        }
+    }
+
     private IReadOnlyList<StoredCuratedList> Load()
     {
         if (!File.Exists(_path))

@@ -90,3 +90,33 @@ http://192.168.50.99:5055
 See `webos-companion/README.md` for packaging notes.
 
 TV playback requires FFmpeg on the desktop machine. The desktop app uses it to turn raw provider streams into local HLS playback URLs such as `/api/hls/.../index.m3u8`.
+
+## Gateway Deployment
+
+The Kubernetes deployment runs the headless gateway project in `M3UPlaylistPlayer.Gateway`; the Avalonia GUI is not part of the container image.
+
+Build locally:
+
+```powershell
+dotnet run --project .\M3UPlaylistPlayer.Gateway\M3UPlaylistPlayer.Gateway.csproj
+```
+
+Deploy through ArgoCD by applying the project and application manifests:
+
+```powershell
+kubectl apply -f .\argocd\project.yaml
+kubectl apply -f .\argocd\application.yaml
+```
+
+The workflow in `.github/workflows/docker-build.yml` publishes the gateway image to:
+
+```text
+ghcr.io/ljearypoiynt/m3u-playlist-player/gateway
+```
+
+For Cloudflare Tunnel, point the hostname at the in-cluster service:
+
+```yaml
+- hostname: m3u.poiynt.com
+  service: http://m3u-gateway-service.m3u-playlist-player.svc.cluster.local:5055
+```

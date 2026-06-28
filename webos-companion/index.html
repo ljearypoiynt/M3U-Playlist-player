@@ -67,50 +67,81 @@
         <div class="setup-copy">
           <p class="setup-kicker">Setup</p>
           <h2>Connect your playlist</h2>
-          <p>Scan the phone setup QR for easier typing, or open manual setup on this TV.</p>
+          <p>Scan the phone setup QR for easier typing, manage categories, or tune your favourites lists.</p>
         </div>
 
-        <div class="setup-grid">
-          <div class="setup-form">
-            <label class="field">
-              <span>Gateway URL</span>
-              <input id="serverUrl" type="url" value="http://192.168.50.99:5055">
-            </label>
-            <label class="field">
-              <span>Playlist URL</span>
-              <input id="playlistUrl" type="url" placeholder="http://provider/get.php?...">
-            </label>
-            <label class="field">
-              <span>EPG URL</span>
-              <input id="epgUrl" type="url" placeholder="Derived from playlist when blank">
-            </label>
-            <div class="setup-actions">
-              <button id="closeSetup" class="mode" type="button">Back</button>
-              <button id="saveSetup" class="primary" type="button">Manual Save & Connect</button>
-            </div>
-            <section id="setupCategoryStep" class="setup-category-step" hidden>
-              <div class="setup-category-head">
-                <div>
-                  <p class="setup-kicker">Categories</p>
-                  <h3>Choose what to keep</h3>
-                  <p id="setupCategorySummary">All categories are selected by default.</p>
-                </div>
-                <div class="setup-category-actions">
-                  <button id="selectAllCategories" class="mode" type="button">Select all</button>
-                  <button id="clearCategories" class="mode" type="button">Clear</button>
+        <nav class="setup-tabs" aria-label="Setup sections">
+          <button id="setupTabConnection" class="setup-tab active" type="button" data-setup-tab="connection">Connection</button>
+          <button id="setupTabCategories" class="setup-tab" type="button" data-setup-tab="categories">Categories</button>
+          <button id="setupTabFavourites" class="setup-tab" type="button" data-setup-tab="favourites">Favourites</button>
+        </nav>
+
+        <div class="setup-tab-panels">
+          <section id="setupConnectionPanel" class="setup-tab-panel" data-setup-panel="connection">
+            <div class="setup-grid">
+              <div class="setup-form">
+                <label class="field">
+                  <span>Gateway URL</span>
+                  <input id="serverUrl" type="url" value="http://192.168.50.99:5055">
+                </label>
+                <label class="field">
+                  <span>Playlist URL</span>
+                  <input id="playlistUrl" type="url" placeholder="http://provider/get.php?...">
+                </label>
+                <label class="field">
+                  <span>EPG URL</span>
+                  <input id="epgUrl" type="url" placeholder="Derived from playlist when blank">
+                </label>
+                <div class="setup-actions">
+                  <button id="closeSetup" class="mode" type="button">Back</button>
+                  <button id="newSession" class="mode setup-new-session" type="button">New Session</button>
+                  <button id="saveSetup" class="primary" type="button">Save & Connect</button>
                 </div>
               </div>
-              <div id="setupCategoryList" class="setup-category-list"></div>
-              <button id="finishCategorySetup" class="primary" type="button">Save Categories</button>
-            </section>
-          </div>
 
-          <aside class="setup-qr">
-            <p class="setup-kicker">Phone setup</p>
-            <img id="setupQr" alt="">
-            <p id="setupUrlText">Creating phone setup link...</p>
-            <button id="startPhoneSetup" class="mode setup-phone-button" type="button">Setup Using Phone</button>
-          </aside>
+              <aside class="setup-qr">
+                <p class="setup-kicker">Phone setup</p>
+                <img id="setupQr" alt="">
+                <p id="setupUrlText">Creating phone setup link...</p>
+                <button id="startPhoneSetup" class="mode setup-phone-button" type="button">Setup Using Phone</button>
+              </aside>
+            </div>
+          </section>
+
+          <section id="setupCategoriesPanel" class="setup-tab-panel" data-setup-panel="categories" hidden>
+            <header class="setup-section-header">
+              <div>
+                <p class="setup-kicker">Visible categories</p>
+                <h3>Choose what to keep</h3>
+                <p id="setupCategorySummary">All categories are selected by default. Deselect anything you do not want to see.</p>
+              </div>
+              <div class="setup-category-actions">
+                <button id="selectAllCategories" class="mode" type="button">Select all</button>
+                <button id="clearCategories" class="mode" type="button">Clear</button>
+              </div>
+            </header>
+            <div id="setupCategoryList" class="setup-category-list" tabindex="0"></div>
+            <footer class="setup-panel-footer">
+              <button id="backToPlaylistSetup" class="mode" type="button">Back</button>
+              <button id="finishCategorySetup" class="primary" type="button">Save Categories</button>
+            </footer>
+          </section>
+
+          <section id="setupFavouritesPanel" class="setup-tab-panel" data-setup-panel="favourites" hidden>
+            <header class="setup-section-header">
+              <div>
+                <p class="setup-kicker">Favourites</p>
+                <h3>Manage lists</h3>
+                <p>Create smaller channel lists for quicker browsing from the TV or phone remote.</p>
+              </div>
+              <button id="setupNewList" class="primary setup-new-list" type="button">Add list</button>
+            </header>
+            <div id="setupListRows" class="setup-list-rows" tabindex="0"></div>
+            <footer class="setup-panel-footer">
+              <p id="setupListSummary" class="setup-list-summary">Connect first to manage lists.</p>
+              <button id="closeSetupFromLists" class="mode" type="button">Done</button>
+            </footer>
+          </section>
         </div>
       </div>
     </section>
@@ -121,7 +152,7 @@
           <button id="closeListEditor" class="mode back-button" type="button">Back</button>
           <div>
             <p class="setup-kicker">Favourites</p>
-            <h2>New favourites list</h2>
+            <h2 id="listEditorTitle">New favourites list</h2>
             <p>Search and select the channels you want in this list.</p>
           </div>
           <button id="saveList" class="primary save-list-button" type="button">Save list</button>

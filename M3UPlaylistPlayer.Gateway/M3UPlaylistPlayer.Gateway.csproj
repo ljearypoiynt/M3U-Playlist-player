@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>M3UPlaylistPlayer.Gateway</RootNamespace>
+    <AssemblyName>M3UPlaylistPlayer.Gateway</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Models\MediaItem.cs" Link="Models\MediaItem.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Models\MediaKind.cs" Link="Models\MediaKind.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\CuratedListStore.cs" Link="Services\CuratedListStore.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\HlsStreamService.cs" Link="Services\HlsStreamService.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\LocalApiServer.cs" Link="Services\LocalApiServer.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\PlaybackSession.cs" Link="Services\PlaybackSession.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\SessionManager.cs" Link="Services\SessionManager.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\SetupLinkManager.cs" Link="Services\SetupLinkManager.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\XtreamClient.cs" Link="Services\XtreamClient.cs" />
+    <Compile Include="..\M3UPlaylistPlayer.Desktop\Services\XtreamSettings.cs" Link="Services\XtreamSettings.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\M3UPlaylistPlayer.Desktop\Remote\**\*.*" Link="Remote\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -72,6 +72,7 @@ public sealed class XtreamClient
         string? group,
         string? region,
         IReadOnlyCollection<string>? excludedGroups,
+        IReadOnlyCollection<string>? selectedGroups,
         int skip,
         int limit,
         CancellationToken cancellationToken)
@@ -84,8 +85,8 @@ public sealed class XtreamClient
             .ToDictionary(grouping => grouping.Key, grouping => grouping.First().CategoryName ?? string.Empty, StringComparer.OrdinalIgnoreCase);
 
         return kind == MediaKind.Live
-            ? await GetLivePageAsync(categoryNames, query, group, region, excludedGroups, skip, limit, cancellationToken)
-            : await GetMoviePageAsync(categoryNames, query, group, region, excludedGroups, skip, limit, cancellationToken);
+            ? await GetLivePageAsync(categoryNames, query, group, region, excludedGroups, selectedGroups, skip, limit, cancellationToken)
+            : await GetMoviePageAsync(categoryNames, query, group, region, excludedGroups, selectedGroups, skip, limit, cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<string, GuideInfo>> GetGuideAsync(
@@ -211,6 +212,7 @@ public sealed class XtreamClient
         string? group,
         string? region,
         IReadOnlyCollection<string>? excludedGroups,
+        IReadOnlyCollection<string>? selectedGroups,
         int skip,
         int limit,
         CancellationToken cancellationToken)
@@ -220,6 +222,7 @@ public sealed class XtreamClient
         IReadOnlyDictionary<string, GuideInfo>? guide = null;
         var queryRegex = BuildSearchRegex(query);
         var excludedSet = ToExcludedGroupSet(excludedGroups);
+        var selectedSet = ToGroupSet(selectedGroups);
         if (queryRegex is not null)
         {
             try
@@ -242,7 +245,7 @@ public sealed class XtreamClient
             }
 
             var item = CreateLiveItem(liveStream, categoryNames);
-            if (!Matches(item, queryRegex, group, region, excludedSet, guide))
+            if (!Matches(item, queryRegex, group, region, excludedSet, selectedSet, guide))
             {
                 continue;
             }
@@ -290,6 +293,7 @@ public sealed class XtreamClient
         string? group,
         string? region,
         IReadOnlyCollection<string>? excludedGroups,
+        IReadOnlyCollection<string>? selectedGroups,
         int skip,
         int limit,
         CancellationToken cancellationToken)
@@ -298,6 +302,7 @@ public sealed class XtreamClient
         var matched = 0;
         var queryRegex = BuildSearchRegex(query);
         var excludedSet = ToExcludedGroupSet(excludedGroups);
+        var selectedSet = ToGroupSet(selectedGroups);
         await using var stream = await _httpClient.GetStreamAsync(BuildApiUrl("get_vod_streams"), cancellationToken);
 
         await foreach (var movieStream in JsonSerializer.DeserializeAsyncEnumerable<XtreamMovieStream>(stream, JsonOptions, cancellationToken))
@@ -308,7 +313,7 @@ public sealed class XtreamClient
             }
 
             var item = CreateMovieItem(movieStream, categoryNames);
-            if (!Matches(item, queryRegex, group, region, excludedSet))
+            if (!Matches(item, queryRegex, group, region, excludedSet, selectedSet))
             {
                 continue;
             }
@@ -546,14 +551,22 @@ public sealed class XtreamClient
         string? group,
         string? region,
         IReadOnlySet<string>? excludedGroups,
+        IReadOnlySet<string>? selectedGroups,
         IReadOnlyDictionary<string, GuideInfo>? guide = null)
     {
-        if (!string.IsNullOrWhiteSpace(group) && !string.Equals(item.Group, group, StringComparison.OrdinalIgnoreCase))
+        var normalizedGroup = NormalizeGroup(item.Group);
+
+        if (!string.IsNullOrWhiteSpace(group) && !string.Equals(normalizedGroup, NormalizeGroup(group), StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (excludedGroups is not null && excludedGroups.Contains(item.Group))
+        if (selectedGroups is not null && !selectedGroups.Contains(normalizedGroup))
+        {
+            return false;
+        }
+
+        if (excludedGroups is not null && excludedGroups.Contains(normalizedGroup))
         {
             return false;
         }
@@ -610,15 +623,27 @@ public sealed class XtreamClient
 
     private static IReadOnlySet<string>? ToExcludedGroupSet(IReadOnlyCollection<string>? excludedGroups)
     {
-        if (excludedGroups is null || excludedGroups.Count == 0)
+        return ToGroupSet(excludedGroups);
+    }
+
+    private static IReadOnlySet<string>? ToGroupSet(IReadOnlyCollection<string>? groups)
+    {
+        if (groups is null || groups.Count == 0)
         {
             return null;
         }
 
-        return excludedGroups
+        var set = groups
             .Where(group => !string.IsNullOrWhiteSpace(group))
-            .Select(group => group.Trim())
+            .Select(NormalizeGroup)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return set.Count == 0 ? null : set;
+    }
+
+    private static string NormalizeGroup(string? group)
+    {
+        return Regex.Replace(group ?? string.Empty, "\\s+", " ").Trim();
     }
 
     private static bool IsUkItem(MediaItem item)

@@ -16,7 +16,7 @@
       <span id="statusPill" class="status-pill">Waiting</span>
     </header>
 
-    <section class="control-panel">
+    <section id="detailsStep" class="control-panel setup-step">
       <p id="deviceName" class="setup-copy">Checking setup link...</p>
       <label class="search-field">
         <span>Playlist URL</span>
@@ -26,7 +26,27 @@
         <span>EPG URL</span>
         <input id="epgUrl" type="url" autocomplete="off" placeholder="Leave blank to derive XMLTV">
       </label>
-      <button id="save" class="primary" type="button">Save To TV</button>
+      <button id="continueToCategories" class="primary" type="button">Continue</button>
+    </section>
+
+    <section id="categoryStep" class="control-panel setup-step category-setup" hidden>
+      <div class="step-title-row">
+        <div>
+          <p class="eyebrow">Categories</p>
+          <h2>Choose what to keep</h2>
+        </div>
+        <span id="categoryCount" class="status-pill">Loading</span>
+      </div>
+      <p id="categoryHelp" class="setup-copy">Everything is selected by default. Deselect categories you do not want to see on the TV.</p>
+      <div class="category-actions">
+        <button id="selectAllCategories" class="filter" type="button">Select all</button>
+        <button id="clearCategories" class="filter" type="button">Clear</button>
+      </div>
+      <div id="categoryList" class="setup-category-list" aria-label="Playlist categories"></div>
+      <div class="setup-actions-row">
+        <button id="backToDetails" class="filter" type="button">Back</button>
+        <button id="save" class="primary" type="button">Save Categories</button>
+      </div>
     </section>
 
     <section class="now-card">

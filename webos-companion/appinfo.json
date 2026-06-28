@@ -1,6 +1,6 @@
 {
   "id": "com.local.m3uplaylistplayer",
-  "version": "0.1.31",
+  "version": "0.1.42",
   "vendor": "Local",
   "type": "web",
   "main": "index.html",

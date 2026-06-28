@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection;
 using M3UPlaylistPlayer.Desktop.Models;
 using QRCoder;
@@ -28,9 +29,13 @@ public sealed class LocalApiServer
     private RemoteCommand? _lastRemoteCommand;
     private WebApplication? _app;
 
-    public LocalApiServer(XtreamClient client)
+    public LocalApiServer(XtreamClient client, string? url = null)
     {
         _client = client;
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            Url = url;
+        }
     }
 
     public string Url { get; private set; } = "http://0.0.0.0:5055";
@@ -50,6 +55,15 @@ public sealed class LocalApiServer
         {
             options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
         });
+        builder.Services.Configure<ForwardedHeadersOptions>(options =>
+        {
+            options.ForwardedHeaders =
+                ForwardedHeaders.XForwardedFor |
+                ForwardedHeaders.XForwardedHost |
+                ForwardedHeaders.XForwardedProto;
+            options.KnownIPNetworks.Clear();
+            options.KnownProxies.Clear();
+        });
         builder.Services.AddCors(options =>
         {
             options.AddDefaultPolicy(policy =>
@@ -59,6 +73,7 @@ public sealed class LocalApiServer
         });
 
         _app = builder.Build();
+        _app.UseForwardedHeaders();
         _app.Use(async (context, next) =>
         {
             context.Response.Headers.AccessControlAllowOrigin = "*";
@@ -87,9 +102,11 @@ public sealed class LocalApiServer
                 "/api/qr.svg?value=...",
                 "/api/setup-links",
                 "/api/setup-links/{setupId}",
+                "/api/setup-links/{setupId}/category-preview",
                 "/api/setup-links/{setupId}/session",
                 "/api/sessions",
                 "/api/sessions/{sessionId}/status",
+                "/api/sessions/{sessionId}/excluded-categories",
                 "/api/sessions/{sessionId}/media?kind=live",
                 "/api/sessions/{sessionId}/categories?kind=live",
                 "/api/sessions/{sessionId}/curated-lists?kind=live",
@@ -116,6 +133,35 @@ public sealed class LocalApiServer
         }));
 
         _app.MapGet("/remote", () => ServeRemoteAsset("index.html"));
+        _app.MapGet("/remote-sw.js", (HttpContext context) =>
+        {
+            context.Response.Headers["Service-Worker-Allowed"] = "/";
+            return ServeRemoteAsset("sw.js");
+        });
+        _app.MapGet("/remote/manifest.webmanifest", (string? session) => Results.Json(new Dictionary<string, object?>
+        {
+            ["name"] = "M3U TV Remote",
+            ["short_name"] = "M3U Remote",
+            ["description"] = "Local remote control for M3U Playlist Player.",
+            ["start_url"] = string.IsNullOrWhiteSpace(session)
+                ? "/sessions"
+                : $"/remote?session={Uri.EscapeDataString(session)}",
+            ["scope"] = "/",
+            ["display"] = "standalone",
+            ["background_color"] = "#090909",
+            ["theme_color"] = "#090909",
+            ["orientation"] = "portrait",
+            ["icons"] = new[]
+            {
+                new Dictionary<string, string>
+                {
+                    ["src"] = "/remote/icon.svg",
+                    ["sizes"] = "any",
+                    ["type"] = "image/svg+xml",
+                    ["purpose"] = "any maskable"
+                }
+            }
+        }, contentType: "application/manifest+json"));
         _app.MapGet("/remote/{fileName}", (string fileName) => ServeRemoteAsset(fileName));
         _app.MapGet("/setup", () => ServeRemoteAsset("setup.html"));
         _app.MapGet("/sessions", () => ServeRemoteAsset("sessions.html"));
@@ -174,8 +220,34 @@ public sealed class LocalApiServer
                 {
                     submitted = true,
                     playlistUrl = configuration.PlaylistUrl,
-                    epgUrl = configuration.EpgUrl
+                    epgUrl = configuration.EpgUrl,
+                    excludedCategories = configuration.ExcludedCategories,
+                    selectedCategories = configuration.SelectedCategories
                 });
+        });
+
+        _app.MapPost("/api/setup-links/{setupId}/category-preview", async (string setupId, CategoryPreviewRequest request, CancellationToken token) =>
+        {
+            if (!_setupLinkManager.TryGet(setupId, out _))
+            {
+                return Results.NotFound(new { error = "Setup link not found or expired." });
+            }
+
+            if (!XtreamSettings.TryFromPlaylistUrl(request.PlaylistUrl, request.EpgUrl, out var settings, out var error))
+            {
+                return Results.BadRequest(new { error });
+            }
+
+            var client = new XtreamClient(settings);
+            var kind = ParseKind(request.Kind);
+            var categories = await client.GetCategoriesAsync(kind, token);
+
+            return Results.Json(new
+            {
+                kind = kind.ToString().ToLowerInvariant(),
+                count = categories.Count,
+                categories
+            });
         });
 
         _app.MapPost("/api/setup-links/{setupId}", (string setupId, SubmitSetupRequest request) =>
@@ -190,7 +262,21 @@ public sealed class LocalApiServer
                 return Results.BadRequest(new { error });
             }
 
-            var configuration = new SetupConfiguration(request.PlaylistUrl!.Trim(), string.IsNullOrWhiteSpace(request.EpgUrl) ? null : request.EpgUrl.Trim());
+            var excludedCategories = request.ExcludedCategories?
+                .Where(category => !string.IsNullOrWhiteSpace(category))
+                .Select(category => category.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var selectedCategories = request.SelectedCategories?
+                .Where(category => !string.IsNullOrWhiteSpace(category))
+                .Select(category => category.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var configuration = new SetupConfiguration(
+                request.PlaylistUrl!.Trim(),
+                string.IsNullOrWhiteSpace(request.EpgUrl) ? null : request.EpgUrl.Trim(),
+                excludedCategories,
+                selectedCategories);
             _setupLinkManager.Submit(setupId, configuration);
             return Results.Json(new
             {
@@ -237,7 +323,13 @@ public sealed class LocalApiServer
                 });
             }
 
-            var session = _sessionManager.CreateSession(request.DeviceName, settings, request.PlaybackMode);
+            var session = _sessionManager.CreateSession(
+                request.DeviceName,
+                settings,
+                request.PlaybackMode,
+                request.ExcludedCategories,
+                request.SelectedCategories,
+                request.RequestedSessionId);
             LoadPersistedCuratedLists(session);
             WarmGuideCacheInBackground(session);
             return Results.Json(new
@@ -259,6 +351,26 @@ public sealed class LocalApiServer
             return _sessionManager.TryGetSession(sessionId, out var session)
                 ? Results.Json(ToSafeSessionStatus(session))
                 : Results.NotFound(new { error = "Session not found or expired." });
+        });
+
+        _app.MapPost("/api/sessions/{sessionId}/excluded-categories", (string sessionId, CategoriesSelectionRequest request) =>
+        {
+            if (!_sessionManager.TryGetSession(sessionId, out var session))
+            {
+                return Results.NotFound(new { error = "Session not found or expired." });
+            }
+
+            var mediaKind = ParseKind(request.Kind);
+            session.SetExcludedCategories(mediaKind, request.ExcludedCategories);
+            session.SetSelectedCategories(mediaKind, request.SelectedCategories);
+            return Results.Json(new
+            {
+                saved = true,
+                sessionId = session.Id,
+                kind = mediaKind.ToString().ToLowerInvariant(),
+                excludedCategories = session.GetExcludedCategories(mediaKind),
+                selectedCategories = session.GetSelectedCategories(mediaKind)
+            });
         });
 
         _app.MapGet("/api/sessions/{sessionId}/curated-lists", (string sessionId, string? kind) =>
@@ -333,6 +445,60 @@ public sealed class LocalApiServer
             });
         });
 
+        _app.MapPut("/api/sessions/{sessionId}/curated-lists/{listId}", (string sessionId, string listId, SaveCuratedListRequest request) =>
+        {
+            if (!_sessionManager.TryGetSession(sessionId, out var session))
+            {
+                return Results.NotFound(new { error = "Session not found or expired." });
+            }
+
+            if (IsBuiltInCuratedList(listId))
+            {
+                return Results.BadRequest(new { error = "Built-in lists cannot be edited." });
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Name))
+            {
+                return Results.BadRequest(new { error = "List name is required." });
+            }
+
+            if (request.ItemIds is null || request.ItemIds.Count == 0)
+            {
+                return Results.BadRequest(new { error = "Choose at least one channel." });
+            }
+
+            var mediaKind = ParseKind(request.Kind);
+            var list = session.UpsertCuratedList(mediaKind, listId, request.Name, request.ItemIds);
+            _curatedListStore.Save(session.Settings, list);
+
+            return Results.Json(new
+            {
+                saved = true,
+                list = ToCuratedListSummary(list)
+            });
+        });
+
+        _app.MapDelete("/api/sessions/{sessionId}/curated-lists/{listId}", (string sessionId, string listId, string? kind) =>
+        {
+            if (!_sessionManager.TryGetSession(sessionId, out var session))
+            {
+                return Results.NotFound(new { error = "Session not found or expired." });
+            }
+
+            if (IsBuiltInCuratedList(listId))
+            {
+                return Results.BadRequest(new { error = "Built-in lists cannot be deleted." });
+            }
+
+            var mediaKind = ParseKind(kind);
+            var deleted = session.DeleteCuratedList(mediaKind, listId);
+            _curatedListStore.Delete(session.Settings, mediaKind, listId);
+
+            return deleted
+                ? Results.Json(new { deleted = true, listId })
+                : Results.NotFound(new { error = "List not found." });
+        });
+
         _app.MapGet("/api/sessions/{sessionId}/media", async (
             HttpContext context,
             string sessionId,
@@ -356,8 +522,9 @@ public sealed class LocalApiServer
             var safeRegion = string.Equals(list, "builtin-uk", StringComparison.OrdinalIgnoreCase)
                 ? "uk"
                 : region;
-            var excludedGroups = ReadExcludedGroups(context);
-            var page = await GetSessionMediaPageAsync(session, mediaKind, query, group, safeRegion, list, excludedGroups, safeSkip, safeLimit, token);
+            var excludedGroups = ReadExcludedGroups(context, session, mediaKind);
+            var selectedGroups = session.GetSelectedCategories(mediaKind);
+            var page = await GetSessionMediaPageAsync(session, mediaKind, query, group, safeRegion, list, excludedGroups, selectedGroups, safeSkip, safeLimit, token);
             session.RememberCount(mediaKind, Math.Max(page.MatchedCount, safeSkip + page.Items.Count));
 
             return Results.Json(new
@@ -372,7 +539,7 @@ public sealed class LocalApiServer
             });
         });
 
-        _app.MapGet("/api/sessions/{sessionId}/categories", async (string sessionId, string? kind, CancellationToken token) =>
+        _app.MapGet("/api/sessions/{sessionId}/categories", async (string sessionId, string? kind, bool? keptOnly, CancellationToken token) =>
         {
             if (!_sessionManager.TryGetSession(sessionId, out var session))
             {
@@ -381,6 +548,25 @@ public sealed class LocalApiServer
 
             var mediaKind = ParseKind(kind);
             var categories = await session.Client.GetCategoriesAsync(mediaKind, token);
+            if (keptOnly == true)
+            {
+                var selected = ToGroupSet(session.GetSelectedCategories(mediaKind));
+                if (selected is not null)
+                {
+                    categories = categories
+                        .Where(category => selected.Contains(NormalizeGroup(category)))
+                        .ToArray();
+                }
+                else
+                {
+                    var excluded = ToGroupSet(session.GetExcludedCategories(mediaKind));
+                    categories = excluded is null
+                        ? categories
+                        : categories
+                            .Where(category => !excluded.Contains(NormalizeGroup(category)))
+                            .ToArray();
+                }
+            }
 
             return Results.Json(new
             {
@@ -563,7 +749,7 @@ public sealed class LocalApiServer
             var safeSkip = Math.Max(0, skip ?? 0);
             var safeLimit = Math.Clamp(limit ?? 240, 1, 1000);
             var excludedGroups = ReadExcludedGroups(context);
-            var page = await _client.GetMediaPageAsync(mediaKind, query, group, region, excludedGroups, safeSkip, safeLimit, token);
+            var page = await _client.GetMediaPageAsync(mediaKind, query, group, region, excludedGroups, null, safeSkip, safeLimit, token);
 
             return Results.Json(new
             {
@@ -822,6 +1008,7 @@ public sealed class LocalApiServer
         string? region,
         string? list,
         IReadOnlyCollection<string> excludedGroups,
+        IReadOnlyCollection<string> selectedGroups,
         int skip,
         int limit,
         CancellationToken cancellationToken)
@@ -830,7 +1017,7 @@ public sealed class LocalApiServer
             string.Equals(list, "all", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(list, "builtin-uk", StringComparison.OrdinalIgnoreCase))
         {
-            return await session.Client.GetMediaPageAsync(kind, query, group, region, excludedGroups, skip, limit, cancellationToken);
+            return await session.Client.GetMediaPageAsync(kind, query, group, region, excludedGroups, selectedGroups, skip, limit, cancellationToken);
         }
 
         if (!session.TryGetCuratedList(kind, list, out var curatedList))
@@ -839,15 +1026,14 @@ public sealed class LocalApiServer
         }
 
         var allowedIds = curatedList.ItemIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var excludedSet = excludedGroups
-            .Where(excludedGroup => !string.IsNullOrWhiteSpace(excludedGroup))
-            .Select(excludedGroup => excludedGroup.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var excludedSet = ToGroupSet(excludedGroups);
+        var selectedSet = ToGroupSet(selectedGroups);
         var queryRegex = BuildSearchRegex(query);
         var filtered = (await session.Client.GetMediaAsync(kind, cancellationToken))
             .Where(item => allowedIds.Contains(item.Id))
-            .Where(item => string.IsNullOrWhiteSpace(group) || string.Equals(item.Group, group, StringComparison.OrdinalIgnoreCase))
-            .Where(item => excludedSet.Count == 0 || !excludedSet.Contains(item.Group))
+            .Where(item => string.IsNullOrWhiteSpace(group) || string.Equals(NormalizeGroup(item.Group), NormalizeGroup(group), StringComparison.OrdinalIgnoreCase))
+            .Where(item => selectedSet is null || selectedSet.Contains(NormalizeGroup(item.Group)))
+            .Where(item => excludedSet is null || !excludedSet.Contains(NormalizeGroup(item.Group)))
             .Where(item => queryRegex is null || SearchMatches($"{item.Name} {item.Group} {item.EpgId}", queryRegex))
             .ToArray();
         var pageItems = filtered
@@ -875,13 +1061,40 @@ public sealed class LocalApiServer
             : new Regex(string.Join(".*", terms), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
-    private static IReadOnlyList<string> ReadExcludedGroups(HttpContext context)
+    private static IReadOnlyList<string> ReadExcludedGroups(HttpContext context, PlaybackSession? session = null, MediaKind? kind = null)
     {
-        return context.Request.Query["excludeGroup"]
+        var queryGroups = context.Request.Query["excludeGroup"]
             .Where(group => !string.IsNullOrWhiteSpace(group))
-            .Select(group => group!.Trim())
+            .Select(group => group!.Trim());
+        var sessionGroups = session is not null && kind is not null
+            ? session.GetExcludedCategories(kind.Value)
+            : [];
+
+        return queryGroups
+            .Concat(sessionGroups)
+            .Where(group => !string.IsNullOrWhiteSpace(group))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static IReadOnlySet<string>? ToGroupSet(IReadOnlyCollection<string>? groups)
+    {
+        if (groups is null || groups.Count == 0)
+        {
+            return null;
+        }
+
+        var set = groups
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Select(NormalizeGroup)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return set.Count == 0 ? null : set;
+    }
+
+    private static string NormalizeGroup(string? group)
+    {
+        return Regex.Replace(group ?? string.Empty, "\\s+", " ").Trim();
     }
 
     private static MediaKind ParseKind(string? kind)
@@ -919,6 +1132,7 @@ public sealed class LocalApiServer
             ".css" => "text/css; charset=utf-8",
             ".js" => "text/javascript; charset=utf-8",
             ".html" => "text/html; charset=utf-8",
+            ".svg" => "image/svg+xml",
             _ => null
         };
 
@@ -1055,7 +1269,17 @@ public sealed class LocalApiServer
             session.PlaybackMode,
             session.CreatedAt,
             session.LastSeenAt,
-            session.ExpiresAt
+            session.ExpiresAt,
+            excludedCategories = new
+            {
+                live = session.GetExcludedCategories(MediaKind.Live),
+                movies = session.GetExcludedCategories(MediaKind.Movies)
+            },
+            selectedCategories = new
+            {
+                live = session.GetSelectedCategories(MediaKind.Live),
+                movies = session.GetSelectedCategories(MediaKind.Movies)
+            }
         };
     }
 
@@ -1090,13 +1314,29 @@ public sealed class LocalApiServer
             list.Name,
             count = list.ItemIds.Count,
             builtIn = false,
+            itemIds = list.ItemIds,
             list.CreatedAt
         };
     }
 
+    private static bool IsBuiltInCuratedList(string? id)
+    {
+        return string.Equals(id, "all", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(id, "builtin-uk", StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed record CreateSetupLinkRequest(string? DeviceName);
 
-    private sealed record SubmitSetupRequest(string? PlaylistUrl, string? EpgUrl);
+    private sealed record SubmitSetupRequest(
+        string? PlaylistUrl,
+        string? EpgUrl,
+        IReadOnlyList<string>? ExcludedCategories,
+        IReadOnlyList<string>? SelectedCategories);
+
+    private sealed record CategoryPreviewRequest(
+        string? PlaylistUrl,
+        string? EpgUrl,
+        string? Kind);
 
     private sealed record SetupSessionRequest(string? SessionId, string? RemoteUrl);
 
@@ -1104,7 +1344,15 @@ public sealed class LocalApiServer
         string? DeviceName,
         string? PlaylistUrl,
         string? EpgUrl,
-        string? PlaybackMode);
+        string? PlaybackMode,
+        IReadOnlyList<string>? ExcludedCategories,
+        IReadOnlyList<string>? SelectedCategories,
+        string? RequestedSessionId);
+
+    private sealed record CategoriesSelectionRequest(
+        string? Kind,
+        IReadOnlyList<string>? ExcludedCategories,
+        IReadOnlyList<string>? SelectedCategories);
 
     private sealed record SaveCuratedListRequest(
         string? Kind,

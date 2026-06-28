@@ -8,13 +8,26 @@ public sealed class SessionManager : IDisposable
     private readonly TimeSpan _sessionLifetime = TimeSpan.FromHours(12);
     private DateTimeOffset _lastCleanup = DateTimeOffset.MinValue;
 
-    public PlaybackSession CreateSession(string? deviceName, XtreamSettings settings, string? playbackMode)
+    public PlaybackSession CreateSession(
+        string? deviceName,
+        XtreamSettings settings,
+        string? playbackMode,
+        IReadOnlyList<string>? excludedLiveCategories = null,
+        IReadOnlyList<string>? selectedLiveCategories = null,
+        string? requestedSessionId = null)
     {
         CleanupExpiredSessions();
 
         var now = DateTimeOffset.Now;
-        var id = Guid.NewGuid().ToString("D");
-        var session = new PlaybackSession(id, deviceName ?? "LG TV", settings, playbackMode ?? "hls", now, _sessionLifetime);
+        var id = Guid.TryParse(requestedSessionId, out var requestedGuid)
+            ? requestedGuid.ToString("D")
+            : Guid.NewGuid().ToString("D");
+        var session = new PlaybackSession(id, deviceName ?? "LG TV", settings, playbackMode ?? "hls", excludedLiveCategories, selectedLiveCategories, now, _sessionLifetime);
+        if (_sessions.TryRemove(id, out var existing))
+        {
+            existing.Dispose();
+        }
+
         _sessions[id] = session;
         return session;
     }

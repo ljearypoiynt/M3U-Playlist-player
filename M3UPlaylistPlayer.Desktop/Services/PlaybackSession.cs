@@ -7,12 +7,22 @@ public sealed class PlaybackSession : IDisposable
 {
     private readonly Dictionary<MediaKind, int> _knownCounts = [];
     private readonly Dictionary<MediaKind, List<CuratedList>> _curatedLists = [];
+    private readonly Dictionary<MediaKind, List<string>> _excludedCategories = [];
+    private readonly Dictionary<MediaKind, List<string>> _selectedCategories = [];
     private readonly object _lock = new();
     private readonly object _remoteLock = new();
     private long _remoteCommandSequence;
     private RemoteCommand? _lastRemoteCommand;
 
-    public PlaybackSession(string id, string deviceName, XtreamSettings settings, string playbackMode, DateTimeOffset createdAt, TimeSpan lifetime)
+    public PlaybackSession(
+        string id,
+        string deviceName,
+        XtreamSettings settings,
+        string playbackMode,
+        IReadOnlyList<string>? excludedLiveCategories,
+        IReadOnlyList<string>? selectedLiveCategories,
+        DateTimeOffset createdAt,
+        TimeSpan lifetime)
     {
         Id = id;
         DeviceName = string.IsNullOrWhiteSpace(deviceName) ? "LG TV" : deviceName.Trim();
@@ -23,6 +33,8 @@ public sealed class PlaybackSession : IDisposable
         ExpiresAt = createdAt.Add(lifetime);
         Client = new XtreamClient(settings);
         HlsStreamService = new HlsStreamService(id);
+        SetExcludedCategories(MediaKind.Live, excludedLiveCategories);
+        SetSelectedCategories(MediaKind.Live, selectedLiveCategories);
     }
 
     public string Id { get; }
@@ -77,6 +89,54 @@ public sealed class PlaybackSession : IDisposable
         }
     }
 
+    public IReadOnlyList<string> GetExcludedCategories(MediaKind kind)
+    {
+        lock (_lock)
+        {
+            return _excludedCategories.TryGetValue(kind, out var categories)
+                ? categories.ToArray()
+                : [];
+        }
+    }
+
+    public void SetExcludedCategories(MediaKind kind, IReadOnlyList<string>? categories)
+    {
+        var safeCategories = (categories ?? [])
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Select(category => category.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        lock (_lock)
+        {
+            _excludedCategories[kind] = safeCategories;
+        }
+    }
+
+    public IReadOnlyList<string> GetSelectedCategories(MediaKind kind)
+    {
+        lock (_lock)
+        {
+            return _selectedCategories.TryGetValue(kind, out var categories)
+                ? categories.ToArray()
+                : [];
+        }
+    }
+
+    public void SetSelectedCategories(MediaKind kind, IReadOnlyList<string>? categories)
+    {
+        var safeCategories = (categories ?? [])
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Select(category => category.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        lock (_lock)
+        {
+            _selectedCategories[kind] = safeCategories;
+        }
+    }
+
     public IReadOnlyList<CuratedList> GetCuratedLists(MediaKind kind)
     {
         lock (_lock)
@@ -92,6 +152,11 @@ public sealed class PlaybackSession : IDisposable
 
     public CuratedList SaveCuratedList(MediaKind kind, string? name, IReadOnlyList<string>? itemIds)
     {
+        return UpsertCuratedList(kind, null, name, itemIds);
+    }
+
+    public CuratedList UpsertCuratedList(MediaKind kind, string? id, string? name, IReadOnlyList<string>? itemIds)
+    {
         var safeName = string.IsNullOrWhiteSpace(name) ? "New list" : name.Trim();
         var safeItemIds = (itemIds ?? [])
             .Where(id => !string.IsNullOrWhiteSpace(id))
@@ -99,12 +164,8 @@ public sealed class PlaybackSession : IDisposable
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(1000)
             .ToArray();
-        var list = new CuratedList(
-            Guid.NewGuid().ToString("D"),
-            kind.ToString().ToLowerInvariant(),
-            safeName.Length > 80 ? safeName[..80] : safeName,
-            safeItemIds,
-            DateTimeOffset.Now);
+        var safeId = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("D") : id.Trim();
+        var now = DateTimeOffset.Now;
 
         lock (_lock)
         {
@@ -114,10 +175,42 @@ public sealed class PlaybackSession : IDisposable
                 _curatedLists[kind] = lists;
             }
 
+            var existingIndex = lists.FindIndex(existing => string.Equals(existing.Id, safeId, StringComparison.OrdinalIgnoreCase));
+            var createdAt = existingIndex >= 0 ? lists[existingIndex].CreatedAt : now;
+            var list = new CuratedList(
+                safeId,
+                kind.ToString().ToLowerInvariant(),
+                safeName.Length > 80 ? safeName[..80] : safeName,
+                safeItemIds,
+                createdAt);
+
+            if (existingIndex >= 0)
+            {
+                lists[existingIndex] = list;
+                return list;
+            }
+
             lists.Add(list);
+            return list;
+        }
+    }
+
+    public bool DeleteCuratedList(MediaKind kind, string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
         }
 
-        return list;
+        lock (_lock)
+        {
+            if (!_curatedLists.TryGetValue(kind, out var lists))
+            {
+                return false;
+            }
+
+            return lists.RemoveAll(list => string.Equals(list.Id, id, StringComparison.OrdinalIgnoreCase)) > 0;
+        }
     }
 
     public void ImportCuratedList(MediaKind kind, CuratedList list)

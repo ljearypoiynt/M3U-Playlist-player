@@ -2,7 +2,9 @@ var state = {
   sessionId: new URLSearchParams(window.location.search).get('session') || '',
   kind: 'live',
   selectedListId: localStorage.getItem('remoteSelectedListId') || 'all',
+  selectedCategory: localStorage.getItem('remoteSelectedCategory') || '',
   curatedLists: [],
+  categories: [],
   items: [],
   hasMore: false,
   isLoading: false,
@@ -22,13 +24,17 @@ var editorPageSize = 80;
 var guidePageSize = 240;
 var searchTimer = null;
 var listSearchTimer = null;
+var deferredInstallPrompt = null;
 
 var els = {
+  remoteManifest: document.getElementById('remoteManifest'),
+  installApp: document.getElementById('installApp'),
   statusPill: document.getElementById('statusPill'),
   liveMode: document.getElementById('liveMode'),
   moviesMode: document.getElementById('moviesMode'),
   search: document.getElementById('search'),
   curatedListSelect: document.getElementById('curatedListSelect'),
+  categorySelect: document.getElementById('categorySelect'),
   newList: document.getElementById('newList'),
   stop: document.getElementById('stop'),
   selectedTitle: document.getElementById('selectedTitle'),
@@ -47,6 +53,31 @@ var els = {
   saveList: document.getElementById('saveList')
 };
 
+updateManifestLink();
+
+window.addEventListener('beforeinstallprompt', function (event) {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  els.installApp.hidden = false;
+});
+
+window.addEventListener('appinstalled', function () {
+  deferredInstallPrompt = null;
+  els.installApp.hidden = true;
+});
+
+els.installApp.addEventListener('click', function () {
+  if (!deferredInstallPrompt) {
+    return;
+  }
+
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.finally(function () {
+    deferredInstallPrompt = null;
+    els.installApp.hidden = true;
+  });
+});
+
 els.liveMode.addEventListener('click', function () {
   setKind('live');
 });
@@ -60,6 +91,11 @@ els.search.addEventListener('input', function () {
 els.curatedListSelect.addEventListener('change', function () {
   state.selectedListId = els.curatedListSelect.value || 'all';
   localStorage.setItem('remoteSelectedListId', state.selectedListId);
+  loadMedia();
+});
+els.categorySelect.addEventListener('change', function () {
+  state.selectedCategory = els.categorySelect.value || '';
+  localStorage.setItem('remoteSelectedCategory', state.selectedCategory);
   loadMedia();
 });
 els.newList.addEventListener('click', openListEditor);
@@ -88,15 +124,17 @@ els.stop.addEventListener('click', function () {
 els.more.addEventListener('click', loadMoreMedia);
 els.refresh.addEventListener('click', function () {
   loadCuratedLists();
-  loadMedia();
+  loadCategories().then(loadMedia);
 });
 
 function setKind(kind) {
   state.kind = kind;
   state.selected = null;
+  state.selectedCategory = '';
+  localStorage.setItem('remoteSelectedCategory', '');
   updateButtons();
   loadCuratedLists();
-  loadMedia();
+  loadCategories().then(loadMedia);
 }
 
 function updateButtons() {
@@ -141,6 +179,49 @@ function loadCuratedLists() {
       state.curatedLists = getFallbackCuratedLists();
       renderCuratedLists();
     });
+}
+
+function loadCategories() {
+  if (!ensureSession()) {
+    return Promise.resolve();
+  }
+
+  return fetchJson(apiPath('/categories?kind=' + encodeURIComponent(state.kind) + '&keptOnly=true'))
+    .then(function (data) {
+      state.categories = data.categories || [];
+      if (state.categories.indexOf(state.selectedCategory) === -1) {
+        state.selectedCategory = '';
+        localStorage.setItem('remoteSelectedCategory', '');
+      }
+      renderCategories();
+    })
+    .catch(function () {
+      state.categories = [];
+      state.selectedCategory = '';
+      localStorage.setItem('remoteSelectedCategory', '');
+      renderCategories();
+    });
+}
+
+function renderCategories() {
+  var option = document.createElement('option');
+  var index;
+
+  els.categorySelect.innerHTML = '';
+  option.value = '';
+  option.textContent = 'All kept categories';
+  els.categorySelect.appendChild(option);
+
+  for (index = 0; index < state.categories.length; index += 1) {
+    option = document.createElement('option');
+    option.value = state.categories[index];
+    option.textContent = state.categories[index];
+    els.categorySelect.appendChild(option);
+  }
+
+  els.categorySelect.value = state.categories.indexOf(state.selectedCategory) >= 0
+    ? state.selectedCategory
+    : '';
 }
 
 function getFallbackCuratedLists() {
@@ -231,6 +312,10 @@ function loadMediaPage(skip, requestId) {
     skip: String(skip),
     limit: String(pageSize)
   });
+
+  if (state.selectedCategory) {
+    params.set('group', state.selectedCategory);
+  }
 
   if (state.selectedListId && state.selectedListId !== 'all') {
     params.set('list', state.selectedListId);
@@ -859,9 +944,26 @@ function cssEscape(value) {
   return String(value).replace(/"/g, '\\"');
 }
 
+function updateManifestLink() {
+  if (!els.remoteManifest) {
+    return;
+  }
+
+  els.remoteManifest.href = '/remote/manifest.webmanifest?session=' + encodeURIComponent(state.sessionId || '');
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/remote-sw.js', {
+      scope: '/'
+    }).catch(function () {
+    });
+  });
+}
+
 updateButtons();
 if (ensureSession()) {
   loadStatus();
   loadCuratedLists();
-  loadMedia();
+  loadCategories().then(loadMedia);
 }
