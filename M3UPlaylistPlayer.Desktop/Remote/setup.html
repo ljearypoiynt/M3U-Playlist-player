@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Set Up TV Playlist</title>
+  <link rel="stylesheet" href="/remote/styles.css">
+</head>
+<body>
+  <main class="remote-shell setup-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">TV Setup</p>
+        <h1>Playlist Setup</h1>
+      </div>
+      <span id="statusPill" class="status-pill">Waiting</span>
+    </header>
+
+    <section class="control-panel">
+      <p id="deviceName" class="setup-copy">Checking setup link...</p>
+      <label class="search-field">
+        <span>Playlist URL</span>
+        <input id="playlistUrl" type="url" autocomplete="off" placeholder="http://provider/get.php?username=...">
+      </label>
+      <label class="search-field">
+        <span>EPG URL</span>
+        <input id="epgUrl" type="url" autocomplete="off" placeholder="Leave blank to derive XMLTV">
+      </label>
+      <button id="save" class="primary" type="button">Save To TV</button>
+    </section>
+
+    <section class="now-card">
+      <p class="eyebrow">Status</p>
+      <h2 id="resultTitle">Ready</h2>
+      <p id="resultText">Your playlist details are sent only to your local desktop server for this TV setup session.</p>
+    </section>
+  </main>
+  <script src="/remote/setup.js"></script>
+</body>
+</html>

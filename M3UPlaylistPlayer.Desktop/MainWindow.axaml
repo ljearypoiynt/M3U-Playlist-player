@@ -1,0 +1,127 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vlc="clr-namespace:LibVLCSharp.Avalonia;assembly=LibVLCSharp.Avalonia"
+        mc:Ignorable="d"
+        d:DesignWidth="1280"
+        d:DesignHeight="760"
+        x:Class="M3UPlaylistPlayer.Desktop.MainWindow"
+        Title="M3U Playlist Player"
+        Width="1280"
+        Height="760"
+        MinWidth="980"
+        MinHeight="620"
+        Background="#F4F6F2">
+    <Grid ColumnDefinitions="390,*" RowDefinitions="*">
+        <Border Grid.Column="0"
+                Background="#FFFFFF"
+                BorderBrush="#DFE5DD"
+                BorderThickness="0,0,1,0"
+                Padding="16">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="M3U Playlist Player"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               Foreground="#18201D" />
+                    <TextBlock Text="Live TV and movies"
+                               Foreground="#627069" />
+                </StackPanel>
+
+                <Grid Grid.Row="1"
+                      Margin="0,18,0,0"
+                      ColumnDefinitions="*,Auto"
+                      RowDefinitions="Auto,Auto,Auto"
+                      ColumnSpacing="8"
+                      RowSpacing="8">
+                    <ComboBox x:Name="KindCombo"
+                              Grid.Column="0"
+                              SelectedIndex="0"
+                              SelectionChanged="OnKindChanged">
+                        <ComboBoxItem Content="Live" />
+                        <ComboBoxItem Content="Movies" />
+                    </ComboBox>
+                    <Button x:Name="RefreshButton"
+                            Grid.Column="1"
+                            Content="Refresh"
+                            Click="OnRefreshClicked" />
+                    <TextBox x:Name="SearchBox"
+                             Grid.Row="1"
+                             Grid.ColumnSpan="2"
+                             Watermark="Search"
+                             TextChanged="OnSearchTextChanged" />
+                    <ComboBox x:Name="CategoryCombo"
+                              Grid.Row="2"
+                              Grid.ColumnSpan="2"
+                              SelectionChanged="OnCategoryChanged" />
+                </Grid>
+
+                <TextBlock x:Name="StatusText"
+                           Grid.Row="2"
+                           Margin="0,12,0,8"
+                           TextWrapping="Wrap"
+                           Foreground="#526057" />
+
+                <Button x:Name="PlayButton"
+                        Grid.Row="3"
+                        Margin="0,0,0,10"
+                        Content="Play selected"
+                        Click="OnPlayClicked" />
+
+                <ListBox x:Name="MediaList"
+                         Grid.Row="4"
+                         DoubleTapped="OnMediaDoubleTapped"
+                         SelectionChanged="OnMediaSelectionChanged" />
+            </Grid>
+        </Border>
+
+        <Grid Grid.Column="1"
+              RowDefinitions="Auto,*,Auto"
+              Margin="18">
+            <StackPanel Spacing="4">
+                <TextBlock x:Name="NowPlayingTitle"
+                           Text="Select a stream or movie"
+                           FontSize="24"
+                           FontWeight="SemiBold"
+                           Foreground="#18201D"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="NowPlayingMeta"
+                           Foreground="#627069"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+
+            <Border Grid.Row="1"
+                    Margin="0,14,0,14"
+                    Background="#050706"
+                    CornerRadius="8"
+                    ClipToBounds="True">
+                <vlc:VideoView x:Name="PlayerView" />
+            </Border>
+
+            <Grid Grid.Row="2"
+                  ColumnDefinitions="Auto,Auto,Auto,Auto,220,*"
+                  ColumnSpacing="8">
+                <Button Content="Pause"
+                        Click="OnPauseClicked" />
+                <Button Grid.Column="1"
+                        Content="Resume"
+                        Click="OnResumeClicked" />
+                <Button Grid.Column="2"
+                        Content="Stop"
+                        Click="OnStopClicked" />
+                <Button Grid.Column="3"
+                        Content="Rescan cast"
+                        Click="OnRescanCastClicked" />
+                <ComboBox x:Name="CastTargetCombo"
+                          Grid.Column="4"
+                          SelectionChanged="OnCastTargetChanged" />
+                <TextBlock x:Name="PlaybackStatusText"
+                           Grid.Column="5"
+                           VerticalAlignment="Center"
+                           Foreground="#526057"
+                           TextWrapping="Wrap" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

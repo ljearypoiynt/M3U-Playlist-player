@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>M3U TV Remote</title>
+  <link rel="stylesheet" href="/remote/styles.css">
+</head>
+<body>
+  <main class="remote-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local TV Remote</p>
+        <h1>M3U Controller</h1>
+      </div>
+      <span id="statusPill" class="status-pill">Connecting</span>
+    </header>
+
+    <section class="control-panel" aria-label="Remote controls">
+      <div class="mode-row">
+        <button id="liveMode" class="seg active" type="button">Live</button>
+        <button id="moviesMode" class="seg" type="button">Movies</button>
+      </div>
+
+      <label class="search-field">
+        <span>Search</span>
+        <input id="search" type="search" inputmode="search" autocomplete="off" placeholder="Channels or program names">
+      </label>
+
+      <section class="list-panel" aria-label="Curated lists">
+        <div class="list-head">
+          <span>Favourites</span>
+          <button id="newList" type="button">+ New list</button>
+        </div>
+        <select id="curatedListSelect"></select>
+      </section>
+
+      <div class="playback-row">
+        <button id="stop" class="stop" type="button">Stop TV</button>
+      </div>
+    </section>
+
+    <section class="now-card" aria-live="polite">
+      <p class="eyebrow">Selected</p>
+      <h2 id="selectedTitle">Nothing selected</h2>
+      <p id="selectedMeta">Tap a channel below to play it on the TV.</p>
+    </section>
+
+    <section class="results-panel">
+      <div class="results-head">
+        <span id="resultCount">Loading channels</span>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+      <div id="results" class="results"></div>
+      <button id="more" class="more" type="button" hidden>Load more</button>
+    </section>
+
+    <section id="listEditor" class="editor-screen" hidden>
+      <header class="editor-topbar">
+        <button id="closeListEditor" class="icon-button" type="button">Back</button>
+        <div>
+          <p class="eyebrow">Favourites</p>
+          <h2>New favourites list</h2>
+        </div>
+      </header>
+
+      <label class="search-field">
+        <span>List name</span>
+        <input id="listName" type="text" autocomplete="off" placeholder="e.g. Sports favourites">
+      </label>
+
+      <label class="search-field">
+        <span>Channels</span>
+        <input id="listSearch" type="search" inputmode="search" autocomplete="off" placeholder="Search channels...">
+      </label>
+
+      <div class="results-head">
+        <span id="listSelectedCount">0 selected</span>
+        <button id="saveList" type="button">Save list</button>
+      </div>
+      <div id="listEditorItems" class="results editor-results"></div>
+      <button id="listMore" class="more" type="button" hidden>Load more</button>
+    </section>
+  </main>
+  <script src="/remote/app.js"></script>
+</body>
+</html>

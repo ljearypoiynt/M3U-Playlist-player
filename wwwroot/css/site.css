@@ -1,0 +1,350 @@
+html {
+  font-size: 16px;
+  min-height: 100%;
+}
+
+body {
+  background: #f4f6f2;
+  color: #18201d;
+  margin-bottom: 72px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.container {
+  max-width: 1180px;
+}
+
+.app-nav {
+  background: #ffffff;
+}
+
+.navbar-brand {
+  color: #18201d;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.footer {
+  background: #ffffff;
+  line-height: 56px;
+}
+
+.toolbar-shell,
+.player-panel,
+.notice,
+.empty-state {
+  background: #ffffff;
+  border: 1px solid #dfe5dd;
+  border-radius: 8px;
+}
+
+.toolbar-shell {
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+.playlist-toolbar {
+  display: grid;
+  gap: 14px;
+}
+
+.source-row,
+.filter-row {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+}
+
+.source-row {
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr) auto;
+}
+
+.filter-row {
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 280px) auto auto auto;
+}
+
+label,
+.search-field span,
+.select-field span {
+  color: #526057;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.search-field,
+.select-field {
+  display: grid;
+  gap: 6px;
+}
+
+input[type="url"],
+input[type="search"],
+select {
+  background: #fbfcfa;
+  border: 1px solid #cfd8cc;
+  border-radius: 6px;
+  color: #18201d;
+  min-height: 42px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+button:focus,
+a:focus {
+  box-shadow: 0 0 0 3px rgba(14, 122, 92, 0.2);
+  outline: 2px solid #0e7a5c;
+  outline-offset: 1px;
+}
+
+.toggle-field {
+  align-items: center;
+  background: #edf4f0;
+  border: 1px solid #cfe0d8;
+  border-radius: 999px;
+  color: #1e483d;
+  display: inline-flex;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.primary-button,
+.secondary-button,
+.icon-button {
+  align-items: center;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 42px;
+  text-decoration: none;
+}
+
+.primary-button {
+  background: #0e7a5c;
+  color: #ffffff;
+  padding: 0 18px;
+}
+
+.secondary-button {
+  background: #233b53;
+  color: #ffffff;
+  padding: 0 18px;
+}
+
+.notice {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+}
+
+.notice.success {
+  border-color: #9bcbbd;
+  color: #0c5d47;
+}
+
+.notice.error {
+  border-color: #ebb3aa;
+  color: #8f2a1c;
+}
+
+.player-panel {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+.player-panel h1,
+.results-header h1,
+.empty-state h2 {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.player-panel p,
+.results-header p,
+.stream-card p,
+.empty-state p {
+  color: #627069;
+  margin: 4px 0 0;
+}
+
+.guide-lines {
+  border-left: 3px solid #b8dfd0;
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding-left: 10px;
+}
+
+.guide-lines p,
+.guide-missing {
+  font-size: 0.9rem;
+}
+
+.guide-lines strong {
+  color: #0c5d47;
+  display: inline-block;
+  min-width: 38px;
+}
+
+.guide-missing {
+  color: #8b7660;
+}
+
+.eyebrow {
+  color: #0e7a5c;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+video {
+  aspect-ratio: 16 / 9;
+  background: #050706;
+  border-radius: 6px;
+  width: 100%;
+}
+
+.player-message,
+.player-hint {
+  font-size: 0.9rem;
+  margin-top: 8px;
+}
+
+.player-hint {
+  color: #7a5a2a;
+}
+
+.results-header {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0 12px;
+}
+
+.stream-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.stream-card {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dfe5dd;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  min-height: 80px;
+  padding: 10px;
+}
+
+.channel-logo {
+  background: #e9eee6;
+  border: 1px solid #dae2d7;
+  border-radius: 6px;
+  height: 58px;
+  object-fit: contain;
+  padding: 5px;
+  width: 58px;
+}
+
+.fallback-logo {
+  align-items: center;
+  color: #456054;
+  display: flex;
+  font-weight: 800;
+  justify-content: center;
+}
+
+.stream-main {
+  min-width: 0;
+}
+
+.stream-title-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stream-title-row h2 {
+  font-size: 1rem;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.country-chip {
+  background: #dff2ea;
+  border: 1px solid #b8dfd0;
+  border-radius: 999px;
+  color: #0c5d47;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 2px 8px;
+}
+
+.stream-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-button {
+  background: #eef2f5;
+  color: #233b53;
+  height: 38px;
+  padding: 0;
+  width: 38px;
+}
+
+.icon-button:hover {
+  background: #dfe9ef;
+  color: #18201d;
+}
+
+.empty-state {
+  padding: 24px;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .source-row,
+  .filter-row,
+  .player-panel,
+  .stream-card {
+    grid-template-columns: 1fr;
+  }
+
+  .stream-card {
+    align-items: start;
+  }
+
+  .stream-actions {
+    width: 100%;
+  }
+
+  .icon-button,
+  .stream-actions form {
+    flex: 1;
+  }
+
+  .stream-actions form .icon-button {
+    width: 100%;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "com.local.m3uplaylistplayer",
+  "version": "0.1.31",
+  "vendor": "Local",
+  "type": "web",
+  "main": "index.html",
+  "title": "M3U Playlist Player",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "requiredPermissions": [],
+  "resolution": "1920x1080",
+  "supportPortraitMode": false,
+  "handlesRelaunch": false
+}

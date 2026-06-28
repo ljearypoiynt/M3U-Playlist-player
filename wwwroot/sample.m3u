@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="bbc-one.uk" tvg-name="BBC One HD" tvg-logo="" group-title="UK Entertainment",BBC One HD
+http://example.com/live/bbc-one.ts
+#EXTINF:-1 tvg-id="sky-news.uk" tvg-name="Sky News" tvg-logo="" group-title="UK News",Sky News
+http://example.com/live/sky-news.ts
+#EXTINF:-1 tvg-id="example.us" tvg-name="Example USA" tvg-logo="" group-title="US",Example USA
+http://example.com/live/example-us.ts

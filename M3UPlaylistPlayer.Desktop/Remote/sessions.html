@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Active TV Sessions</title>
+  <link rel="stylesheet" href="/remote/styles.css">
+</head>
+<body>
+  <main class="remote-shell sessions-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local Server</p>
+        <h1>Active Sessions</h1>
+      </div>
+      <span id="statusPill" class="status-pill">Loading</span>
+    </header>
+
+    <section class="results-panel">
+      <div class="results-head">
+        <span id="resultCount">Checking sessions</span>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+      <div id="sessions" class="session-list"></div>
+    </section>
+  </main>
+  <script src="/remote/sessions.js"></script>
+</body>
+</html>

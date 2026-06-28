@@ -1,0 +1,213 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Playlist Player";
+}
+
+<section class="toolbar-shell">
+    <form method="get" class="playlist-toolbar">
+        <div class="source-row">
+            <label for="sourceUrl">Playlist URL</label>
+            <input id="sourceUrl" name="sourceUrl" value="@Model.SourceUrl" type="url" spellcheck="false" />
+            <button class="primary-button" type="submit" name="refresh" value="true" title="Download the latest playlist">Refresh</button>
+        </div>
+
+        <div class="filter-row">
+            <label class="search-field" for="query">
+                <span>Search</span>
+                <input id="query" name="query" value="@Model.Query" type="search" placeholder="BBC, Sky, sport, movies" />
+            </label>
+
+            <label class="select-field" for="group">
+                <span>Group</span>
+                <select id="group" name="group">
+                    <option value="">All groups</option>
+                    @foreach (var group in Model.Groups)
+                    {
+                        <option value="@group" selected="@(string.Equals(group, Model.Group, StringComparison.OrdinalIgnoreCase))">@group</option>
+                    }
+                </select>
+            </label>
+
+            <label class="toggle-field">
+                <input type="checkbox" name="ukOnly" value="true" checked="@Model.UkOnly" />
+                <span>UK only</span>
+            </label>
+
+            <label class="toggle-field">
+                <input type="checkbox" name="showGuide" value="true" checked="@Model.ShowGuide" />
+                <span>TV guide</span>
+            </label>
+
+            <button class="secondary-button" type="submit" title="Apply filters">Filter</button>
+        </div>
+    </form>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(Model.StatusMessage))
+{
+    <div class="notice success">@Model.StatusMessage</div>
+}
+
+@if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+{
+    <div class="notice error">@Model.ErrorMessage</div>
+}
+
+@if (!string.IsNullOrWhiteSpace(Model.GuideMessage))
+{
+    <div class="notice error">@Model.GuideMessage</div>
+}
+
+@if (Model.SelectedStream is not null)
+{
+    <section class="player-panel" aria-label="Selected stream player">
+        <div>
+            <p class="eyebrow">Now selected</p>
+            <h1>@Model.SelectedStream.Name</h1>
+            <p>@Model.SelectedStream.GroupTitle</p>
+        </div>
+        <div>
+            <video id="streamVideo" controls preload="none" data-stream-url="@Model.SelectedStream.BrowserUrl"></video>
+            <p id="playerMessage" class="player-message">Loading browser player...</p>
+            <p class="player-hint">If this provider blocks browser HLS segments, use the external player button on the stream row.</p>
+        </div>
+    </section>
+}
+
+<section class="results-header">
+    <div>
+        <h1>Streams</h1>
+        <p>
+            @Model.Streams.Count stream@(Model.Streams.Count == 1 ? string.Empty : "s")
+            @if (Model.DownloadedAt is not null)
+            {
+                <span>downloaded @Model.DownloadedAt.Value.ToLocalTime().ToString("g") via @Model.SourceKind</span>
+            }
+        </p>
+    </div>
+</section>
+
+<section class="stream-grid" aria-label="Playlist streams">
+    @foreach (var stream in Model.Streams)
+    {
+        <article class="stream-card">
+            @if (!string.IsNullOrWhiteSpace(stream.TvgLogo))
+            {
+                <img class="channel-logo" src="@stream.TvgLogo" alt="" loading="lazy" referrerpolicy="no-referrer" />
+            }
+            else
+            {
+                <div class="channel-logo fallback-logo">@stream.Name[..Math.Min(2, stream.Name.Length)].ToUpperInvariant()</div>
+            }
+
+            <div class="stream-main">
+                <div class="stream-title-row">
+                    <h2>@stream.Name</h2>
+                    @if (stream.IsUk)
+                    {
+                        <span class="country-chip">UK</span>
+                    }
+                </div>
+                <p>@(string.IsNullOrWhiteSpace(stream.GroupTitle) ? "Ungrouped" : stream.GroupTitle)</p>
+                @if (Model.ShowGuide)
+                {
+                    M3UPlaylistPlayer.Models.StreamGuide? guide = null;
+                    var hasGuide = !string.IsNullOrWhiteSpace(stream.TvgId) && Model.Guide.TryGetValue(stream.TvgId, out guide);
+                    if (hasGuide && guide is not null && (guide.Now is not null || guide.Next is not null))
+                    {
+                        <div class="guide-lines">
+                            @if (guide.Now is not null)
+                            {
+                                <p><strong>Now</strong> @guide.Now.Start.ToLocalTime().ToString("HH:mm") - @guide.Now.Stop.ToLocalTime().ToString("HH:mm") @guide.Now.Title</p>
+                            }
+                            @if (guide.Next is not null)
+                            {
+                                <p><strong>Next</strong> @guide.Next.Start.ToLocalTime().ToString("HH:mm") - @guide.Next.Stop.ToLocalTime().ToString("HH:mm") @guide.Next.Title</p>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="guide-missing">No guide match</p>
+                    }
+                }
+            </div>
+
+            <div class="stream-actions">
+                <a class="icon-button" asp-page="./Index" asp-route-sourceUrl="@Model.SourceUrl" asp-route-query="@Model.Query" asp-route-group="@Model.Group" asp-route-ukOnly="@Model.UkOnly" asp-route-showGuide="@Model.ShowGuide" asp-route-playId="@stream.Id" title="Try browser playback">▶</a>
+                <form method="post" asp-page-handler="Open">
+                    <input type="hidden" name="id" value="@stream.Id" />
+                    <input type="hidden" name="sourceUrl" value="@Model.SourceUrl" />
+                    <input type="hidden" name="query" value="@Model.Query" />
+                    <input type="hidden" name="group" value="@Model.Group" />
+                    <input type="hidden" name="ukOnly" value="@Model.UkOnly.ToString().ToLowerInvariant()" />
+                    <input type="hidden" name="showGuide" value="@Model.ShowGuide.ToString().ToLowerInvariant()" />
+                    <button class="icon-button" type="submit" title="Open in VLC, mpv, or system player">⤴</button>
+                </form>
+                <a class="icon-button" href="@stream.Url" title="Open stream URL directly">↗</a>
+            </div>
+        </article>
+    }
+</section>
+
+@if (Model.Streams.Count == 0 && string.IsNullOrWhiteSpace(Model.ErrorMessage))
+{
+    <div class="empty-state">
+        <h2>No matching streams</h2>
+        <p>The provider returned no playable streams for this source, or the active filters exclude them.</p>
+    </div>
+}
+
+@section Scripts {
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+    <script>
+        (() => {
+            const video = document.getElementById('streamVideo');
+            const message = document.getElementById('playerMessage');
+            if (!video || !message) {
+                return;
+            }
+
+            const streamUrl = video.dataset.streamUrl;
+            if (!streamUrl) {
+                message.textContent = 'No browser playback URL is available for this stream.';
+                return;
+            }
+
+            const isHls = streamUrl.toLowerCase().includes('.m3u8');
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = streamUrl;
+                message.textContent = 'Using native browser HLS playback.';
+                return;
+            }
+
+            if (isHls && window.Hls && window.Hls.isSupported()) {
+                const hls = new window.Hls({
+                    lowLatencyMode: false,
+                    backBufferLength: 60
+                });
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+                hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+                    message.textContent = 'Ready. Press play to start the stream.';
+                });
+                hls.on(window.Hls.Events.ERROR, (_event, data) => {
+                    if (data.fatal) {
+                        const detail = data.response?.code ? `Provider returned HTTP ${data.response.code}.` : data.details || 'Fatal HLS error.';
+                        message.textContent = `${detail} Browser playback is blocked for this stream. Use VLC or mpv.`;
+                    }
+                });
+                return;
+            }
+
+            if (isHls && !window.Hls) {
+                message.textContent = 'The browser HLS player script did not load. Check the internet connection and refresh.';
+                return;
+            }
+
+            video.src = streamUrl;
+            message.textContent = 'This stream format may not play in this browser. Use VLC if it does not start.';
+        })();
+    </script>
+}

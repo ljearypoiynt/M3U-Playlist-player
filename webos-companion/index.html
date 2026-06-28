@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>M3U Playlist Player</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <aside class="sidebar">
+      <div class="sidebar-controls">
+        <h1>M3U Playlist Player</h1>
+        <button id="openSetup" class="primary secondary-action" type="button">Setup</button>
+        <div class="mode-row library-row">
+          <button id="liveMode" class="mode active" type="button">Live TV</button>
+          <button id="moviesMode" class="mode" type="button">Movies</button>
+        </div>
+        <label class="field">
+          <span>Search</span>
+          <input id="search" type="search" placeholder="Channels or program names">
+        </label>
+        <section class="curated-panel" aria-label="Curated lists">
+          <div class="curated-head">
+            <span>Favourites</span>
+            <button id="newList" type="button">+ New list</button>
+          </div>
+          <select id="curatedListSelect" class="curated-select"></select>
+        </section>
+        <label class="field">
+          <span>Category</span>
+          <select id="categorySelect">
+            <option value="">All kept categories</option>
+          </select>
+        </label>
+        <p id="connectionSummary" class="connection-summary">No session connected.</p>
+        <button id="showRemoteQrMain" class="mode remote-qr-action" type="button">Remote QR</button>
+      </div>
+      <p id="status" class="status">Open Setup to add your playlist.</p>
+    </aside>
+
+    <section class="content">
+      <section class="guide-header">
+        <div class="selection">
+          <div class="hero-line">
+            <span class="on-air">ON AIR</span>
+            <span id="selectedChannel">No channel selected</span>
+          </div>
+          <h2 id="selectedTitle">Nothing selected</h2>
+          <p id="selectedMeta"></p>
+        </div>
+        <div class="preview">
+          <video id="player" controls tabindex="0"></video>
+        </div>
+      </section>
+      <nav class="guide-tabs" aria-label="Active filters">
+        <span>Channel</span>
+        <span>Now</span>
+        <span>Next</span>
+        <span id="playbackTab">HLS proxy</span>
+      </nav>
+      <div id="grid" class="grid" tabindex="0"></div>
+    </section>
+
+    <section id="setupScreen" class="setup-screen" hidden>
+      <div class="setup-panel">
+        <div class="setup-copy">
+          <p class="setup-kicker">Setup</p>
+          <h2>Connect your playlist</h2>
+          <p>Scan the phone setup QR for easier typing, or open manual setup on this TV.</p>
+        </div>
+
+        <div class="setup-grid">
+          <div class="setup-form">
+            <label class="field">
+              <span>Gateway URL</span>
+              <input id="serverUrl" type="url" value="http://192.168.50.99:5055">
+            </label>
+            <label class="field">
+              <span>Playlist URL</span>
+              <input id="playlistUrl" type="url" placeholder="http://provider/get.php?...">
+            </label>
+            <label class="field">
+              <span>EPG URL</span>
+              <input id="epgUrl" type="url" placeholder="Derived from playlist when blank">
+            </label>
+            <div class="setup-actions">
+              <button id="closeSetup" class="mode" type="button">Back</button>
+              <button id="saveSetup" class="primary" type="button">Manual Save & Connect</button>
+            </div>
+            <section id="setupCategoryStep" class="setup-category-step" hidden>
+              <div class="setup-category-head">
+                <div>
+                  <p class="setup-kicker">Categories</p>
+                  <h3>Choose what to keep</h3>
+                  <p id="setupCategorySummary">All categories are selected by default.</p>
+                </div>
+                <div class="setup-category-actions">
+                  <button id="selectAllCategories" class="mode" type="button">Select all</button>
+                  <button id="clearCategories" class="mode" type="button">Clear</button>
+                </div>
+              </div>
+              <div id="setupCategoryList" class="setup-category-list"></div>
+              <button id="finishCategorySetup" class="primary" type="button">Save Categories</button>
+            </section>
+          </div>
+
+          <aside class="setup-qr">
+            <p class="setup-kicker">Phone setup</p>
+            <img id="setupQr" alt="">
+            <p id="setupUrlText">Creating phone setup link...</p>
+            <button id="startPhoneSetup" class="mode setup-phone-button" type="button">Setup Using Phone</button>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="listEditorScreen" class="list-editor-screen" hidden>
+      <div class="list-editor-panel">
+        <header class="list-editor-header">
+          <button id="closeListEditor" class="mode back-button" type="button">Back</button>
+          <div>
+            <p class="setup-kicker">Favourites</p>
+            <h2>New favourites list</h2>
+            <p>Search and select the channels you want in this list.</p>
+          </div>
+          <button id="saveList" class="primary save-list-button" type="button">Save list</button>
+        </header>
+
+        <div class="list-editor-body">
+          <label class="field">
+            <span>List name</span>
+            <input id="listName" type="text" placeholder="e.g. Sports favourites">
+          </label>
+          <div class="editor-toolbar">
+            <label class="field">
+              <span>Channels</span>
+              <input id="listSearch" type="search" placeholder="Search channels...">
+            </label>
+            <span id="listSelectedCount">0 selected</span>
+          </div>
+          <div id="listEditorItems" class="list-editor-items" tabindex="0"></div>
+        </div>
+
+        <footer class="list-editor-footer">
+          <span id="listFooterCount">0 channels selected</span>
+          <button id="cancelList" class="mode" type="button">Cancel</button>
+          <button id="createList" class="primary" type="button">Create list</button>
+        </footer>
+      </div>
+    </section>
+
+    <section id="remoteQrOverlay" class="qr-overlay" hidden>
+      <div class="qr-dialog">
+        <div class="setup-copy">
+          <p class="setup-kicker">Phone remote</p>
+          <h2>Scan to control this TV</h2>
+          <p>Open this on your phone to search, filter, play, and stop streams for this TV session.</p>
+        </div>
+        <img id="remoteQr" alt="">
+        <p id="remoteQrText"></p>
+        <button id="closeRemoteQr" class="primary" type="button">Close</button>
+      </div>
+    </section>
+  </main>
+  <script src="vendor/hls.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
