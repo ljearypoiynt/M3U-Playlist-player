@@ -675,7 +675,9 @@ public sealed class XtreamClient
     private static void LogGuidePerf(string scope, string message, params object?[] args)
     {
         var formatted = args.Length == 0 ? message : string.Format(message, args);
-        Trace.WriteLine($"[XtreamGuide:{scope}] {formatted}");
+        var line = $"[XtreamGuide:{scope}] {formatted}";
+        Trace.WriteLine(line);
+        Console.WriteLine($"{DateTimeOffset.UtcNow:O} {line}");
     }
 
     private MediaItem CreateLiveItem(
