@@ -5,6 +5,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Threading;
+using System.Xml;
 using M3UPlaylistPlayer.Desktop.Models;
 
 namespace M3UPlaylistPlayer.Desktop.Services;
@@ -623,40 +624,58 @@ public sealed class XtreamClient
         var now = DateTimeOffset.UtcNow;
 
         var downloadStopwatch = Stopwatch.StartNew();
-        var content = await _httpClient.GetStringAsync(BuildXmltvUrl(), cancellationToken);
+        await using var stream = await _httpClient.GetStreamAsync(BuildXmltvUrl(), cancellationToken);
         downloadStopwatch.Stop();
 
-        var aliasesStopwatch = Stopwatch.StartNew();
-        var channelAliases = ReadXmltvChannelAliases(content);
-        aliasesStopwatch.Stop();
-
         var byChannel = new Dictionary<string, XmltvGuidePair>(StringComparer.OrdinalIgnoreCase);
-
-        var matchStopwatch = Stopwatch.StartNew();
-        var programmeMatches = Regex.Matches(
-            content,
-            "<programme\\b(?<attrs>[^>]*)>(?<body>.*?)</programme>",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        matchStopwatch.Stop();
+        var channelAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         var parseStopwatch = Stopwatch.StartNew();
         var seenProgrammes = 0;
         var keptProgrammes = 0;
 
-        foreach (Match match in programmeMatches)
+        var settings = new XmlReaderSettings
         {
-            seenProgrammes++;
+            Async = true,
+            DtdProcessing = DtdProcessing.Ignore,
+            IgnoreComments = true,
+            IgnoreWhitespace = true,
+            CheckCharacters = false
+        };
+
+        using var reader = XmlReader.Create(stream, settings);
+        while (await reader.ReadAsync())
+        {
             cancellationToken.ThrowIfCancellationRequested();
-            var attrs = match.Groups["attrs"].Value;
-            var channel = ReadXmlAttribute(attrs, "channel");
-            var start = ParseXmltvTime(ReadXmlAttribute(attrs, "start"));
-            var stop = ParseXmltvTime(ReadXmlAttribute(attrs, "stop"));
-            if (string.IsNullOrWhiteSpace(channel) || start is null || stop is null || stop <= now)
+
+            if (reader.NodeType != XmlNodeType.Element)
             {
                 continue;
             }
 
-            var title = ReadXmlTitle(match.Groups["body"].Value);
+            if (string.Equals(reader.Name, "channel", StringComparison.OrdinalIgnoreCase))
+            {
+                await ReadChannelAliasesAsync(reader, channelAliases, cancellationToken);
+                continue;
+            }
+
+            if (!string.Equals(reader.Name, "programme", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            seenProgrammes++;
+
+            var channelId = reader.GetAttribute("channel");
+            var start = ParseXmltvTime(reader.GetAttribute("start"));
+            var stop = ParseXmltvTime(reader.GetAttribute("stop"));
+            if (string.IsNullOrWhiteSpace(channelId) || start is null || stop is null || stop <= now)
+            {
+                await SkipElementAsync(reader);
+                continue;
+            }
+
+            var (title, description) = await ReadProgrammeDetailsAsync(reader, cancellationToken);
             if (string.IsNullOrWhiteSpace(title))
             {
                 continue;
@@ -664,9 +683,6 @@ public sealed class XtreamClient
 
             keptProgrammes++;
 
-            var description = ReadXmlDescription(match.Groups["body"].Value);
-
-            var channelId = channel;
             byChannel.TryGetValue(channelId, out var pair);
             pair ??= new XmltvGuidePair();
             if (start <= now && stop > now)
@@ -720,19 +736,120 @@ public sealed class XtreamClient
         totalStopwatch.Stop();
         LogGuidePerf(
             "xmltv",
-            "LoadXmltvGuideAsync done in {0}ms. DownloadMs={1}, AliasMs={2}, MatchMs={3}, ParseMs={4}, ContentChars={5}, ProgrammeMatches={6}, KeptProgrammes={7}, FinalKeys={8}, AliasCount={9}",
+            "LoadXmltvGuideAsync done in {0}ms. DownloadMs={1}, ParseMs={2}, ProgrammeMatches={3}, KeptProgrammes={4}, FinalKeys={5}, AliasCount={6}",
             totalStopwatch.ElapsedMilliseconds,
             downloadStopwatch.ElapsedMilliseconds,
-            aliasesStopwatch.ElapsedMilliseconds,
-            matchStopwatch.ElapsedMilliseconds,
             parseStopwatch.ElapsedMilliseconds,
-            content.Length,
             seenProgrammes,
             keptProgrammes,
             guide.Count,
             channelAliases.Count);
 
         return guide;
+    }
+
+    private static async Task ReadChannelAliasesAsync(
+        XmlReader reader,
+        Dictionary<string, string> channelAliases,
+        CancellationToken cancellationToken)
+    {
+        var channelId = reader.GetAttribute("id");
+        if (string.IsNullOrWhiteSpace(channelId))
+        {
+            await SkipElementAsync(reader);
+            return;
+        }
+
+        if (reader.IsEmptyElement)
+        {
+            return;
+        }
+
+        while (await reader.ReadAsync())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (reader.NodeType == XmlNodeType.EndElement &&
+                string.Equals(reader.Name, "channel", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            if (reader.NodeType != XmlNodeType.Element ||
+                !string.Equals(reader.Name, "display-name", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var displayName = (await reader.ReadElementContentAsStringAsync()).Trim();
+            if (string.IsNullOrWhiteSpace(displayName))
+            {
+                continue;
+            }
+
+            var normalized = NormalizeGuideName(displayName);
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                channelAliases[normalized] = channelId;
+            }
+        }
+    }
+
+    private static async Task<(string? Title, string? Description)> ReadProgrammeDetailsAsync(
+        XmlReader reader,
+        CancellationToken cancellationToken)
+    {
+        string? title = null;
+        string? description = null;
+
+        if (reader.IsEmptyElement)
+        {
+            return (null, null);
+        }
+
+        while (await reader.ReadAsync())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (reader.NodeType == XmlNodeType.EndElement &&
+                string.Equals(reader.Name, "programme", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            if (reader.NodeType != XmlNodeType.Element)
+            {
+                continue;
+            }
+
+            if (string.Equals(reader.Name, "title", StringComparison.OrdinalIgnoreCase))
+            {
+                title = (await reader.ReadElementContentAsStringAsync()).Trim();
+            }
+            else if (string.Equals(reader.Name, "desc", StringComparison.OrdinalIgnoreCase))
+            {
+                description = (await reader.ReadElementContentAsStringAsync()).Trim();
+            }
+        }
+
+        return (title, string.IsNullOrWhiteSpace(description) ? null : description);
+    }
+
+    private static async Task SkipElementAsync(XmlReader reader)
+    {
+        if (reader.IsEmptyElement)
+        {
+            return;
+        }
+
+        var depth = reader.Depth;
+        while (await reader.ReadAsync())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+            {
+                break;
+            }
+        }
     }
 
     private static int CountMissingGuide(
