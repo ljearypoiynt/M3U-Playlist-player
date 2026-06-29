@@ -14,7 +14,7 @@ public sealed class XtreamClient
 {
     private const int MaxGuideIdsPerRequest = 300;
     private const int ShortGuideCacheMinutes = 4;
-    private const int ShortGuideNegativeCooldownSeconds = 90;
+    private const int ShortGuideNegativeCooldownSeconds = 480;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
