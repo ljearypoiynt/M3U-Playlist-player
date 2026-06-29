@@ -3,6 +3,8 @@ using System.Text.Json.Serialization;
 using System.Text;
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
+using System.Threading;
 using M3UPlaylistPlayer.Desktop.Models;
 
 namespace M3UPlaylistPlayer.Desktop.Services;
@@ -91,6 +93,14 @@ public sealed class XtreamClient
         IReadOnlyCollection<string> ids,
         CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        LogGuidePerf(
+            requestId,
+            "GetGuideAsync start. RequestedIds={0}",
+            ids.Count);
+
+        var normalizeStopwatch = Stopwatch.StartNew();
         var liveIds = ids
             .Select(TryParseLiveStreamId)
             .Where(id => id is not null)
@@ -98,16 +108,45 @@ public sealed class XtreamClient
             .Distinct()
             .Take(MaxGuideIdsPerRequest)
             .ToArray();
+        normalizeStopwatch.Stop();
+
+        LogGuidePerf(
+            requestId,
+            "Normalized ids in {0}ms. LiveIds={1}, MaxPerRequest={2}",
+            normalizeStopwatch.ElapsedMilliseconds,
+            liveIds.Length,
+            MaxGuideIdsPerRequest);
+
         var results = liveIds.ToDictionary(
             streamId => $"live-{streamId}",
             _ => new GuideInfo(null, null),
             StringComparer.OrdinalIgnoreCase);
 
+        var cachedFillBefore = CountMissingGuide(results, liveIds);
+        var cachedFillStopwatch = Stopwatch.StartNew();
         FillMissingGuideFromCachedXmltv(results, liveIds);
+        cachedFillStopwatch.Stop();
+        var cachedFillAfter = CountMissingGuide(results, liveIds);
+
+        LogGuidePerf(
+            requestId,
+            "Cached XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
+            cachedFillStopwatch.ElapsedMilliseconds,
+            cachedFillBefore,
+            cachedFillAfter);
 
         var shortGuideIds = liveIds
             .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
             .ToArray();
+
+        LogGuidePerf(
+            requestId,
+            "Short EPG stage prepared. RequestsNeeded={0}",
+            shortGuideIds.Length);
+
+        long shortGuideTotalMs = 0;
+        var shortGuideSuccess = 0;
+        var shortGuideFailures = 0;
 
         using var semaphore = new SemaphoreSlim(3);
         var tasks = shortGuideIds.Select(async streamId =>
@@ -115,11 +154,17 @@ public sealed class XtreamClient
             await semaphore.WaitAsync(cancellationToken);
             try
             {
+                var shortStopwatch = Stopwatch.StartNew();
                 var guide = await GetShortGuideAsync(streamId, cancellationToken);
+                shortStopwatch.Stop();
+
                 lock (results)
                 {
                     results[$"live-{streamId}"] = guide;
                 }
+
+                Interlocked.Add(ref shortGuideTotalMs, shortStopwatch.ElapsedMilliseconds);
+                Interlocked.Increment(ref shortGuideSuccess);
             }
             catch
             {
@@ -127,6 +172,8 @@ public sealed class XtreamClient
                 {
                     results[$"live-{streamId}"] = new GuideInfo(null, null);
                 }
+
+                Interlocked.Increment(ref shortGuideFailures);
             }
             finally
             {
@@ -134,8 +181,32 @@ public sealed class XtreamClient
             }
         });
 
+        var shortStageStopwatch = Stopwatch.StartNew();
         await Task.WhenAll(tasks);
+        shortStageStopwatch.Stop();
+
+        LogGuidePerf(
+            requestId,
+            "Short EPG completed in {0}ms. Success={1}, Failures={2}, SumCallMs={3}",
+            shortStageStopwatch.ElapsedMilliseconds,
+            shortGuideSuccess,
+            shortGuideFailures,
+            shortGuideTotalMs);
+
+        var fallbackBefore = CountMissingGuide(results, liveIds);
+        var fallbackStopwatch = Stopwatch.StartNew();
         FillMissingGuideFromCachedXmltv(results, liveIds);
+        fallbackStopwatch.Stop();
+        var fallbackAfter = CountMissingGuide(results, liveIds);
+
+        totalStopwatch.Stop();
+        LogGuidePerf(
+            requestId,
+            "GetGuideAsync done in {0}ms. MissingBeforeFallback={1}, MissingAfterFallback={2}, Returned={3}",
+            totalStopwatch.ElapsedMilliseconds,
+            fallbackBefore,
+            fallbackAfter,
+            results.Count);
 
         return results;
     }
@@ -431,10 +502,18 @@ public sealed class XtreamClient
 
     private async Task<IReadOnlyDictionary<string, GuideInfo>> GetXmltvGuideAsync(CancellationToken cancellationToken)
     {
+        var start = Stopwatch.StartNew();
+
         lock (_guideLock)
         {
             if (_xmltvGuideCache is not null && _xmltvGuideExpires > DateTimeOffset.UtcNow)
             {
+                start.Stop();
+                LogGuidePerf(
+                    "cache",
+                    "GetXmltvGuideAsync cache hit in {0}ms. CachedChannels={1}",
+                    start.ElapsedMilliseconds,
+                    _xmltvGuideCache.Count);
                 return _xmltvGuideCache;
             }
 
@@ -449,22 +528,45 @@ public sealed class XtreamClient
             _xmltvGuideLoad = null;
         }
 
+        start.Stop();
+        LogGuidePerf(
+            "load",
+            "GetXmltvGuideAsync loaded in {0}ms. CachedChannels={1}",
+            start.ElapsedMilliseconds,
+            guide.Count);
+
         return guide;
     }
 
     private async Task<IReadOnlyDictionary<string, GuideInfo>> LoadXmltvGuideAsync(CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
         var now = DateTimeOffset.UtcNow;
+
+        var downloadStopwatch = Stopwatch.StartNew();
         var content = await _httpClient.GetStringAsync(BuildXmltvUrl(), cancellationToken);
+        downloadStopwatch.Stop();
+
+        var aliasesStopwatch = Stopwatch.StartNew();
         var channelAliases = ReadXmltvChannelAliases(content);
+        aliasesStopwatch.Stop();
+
         var byChannel = new Dictionary<string, XmltvGuidePair>(StringComparer.OrdinalIgnoreCase);
+
+        var matchStopwatch = Stopwatch.StartNew();
         var programmeMatches = Regex.Matches(
             content,
             "<programme\\b(?<attrs>[^>]*)>(?<body>.*?)</programme>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        matchStopwatch.Stop();
+
+        var parseStopwatch = Stopwatch.StartNew();
+        var seenProgrammes = 0;
+        var keptProgrammes = 0;
 
         foreach (Match match in programmeMatches)
         {
+            seenProgrammes++;
             cancellationToken.ThrowIfCancellationRequested();
             var attrs = match.Groups["attrs"].Value;
             var channel = ReadXmlAttribute(attrs, "channel");
@@ -480,6 +582,8 @@ public sealed class XtreamClient
             {
                 continue;
             }
+
+            keptProgrammes++;
 
             var description = ReadXmlDescription(match.Groups["body"].Value);
 
@@ -511,6 +615,8 @@ public sealed class XtreamClient
             byChannel[channelId] = pair;
         }
 
+        parseStopwatch.Stop();
+
         var guide = byChannel.ToDictionary(
             pair => pair.Key,
             pair => new GuideInfo(
@@ -532,7 +638,44 @@ public sealed class XtreamClient
             }
         }
 
+        totalStopwatch.Stop();
+        LogGuidePerf(
+            "xmltv",
+            "LoadXmltvGuideAsync done in {0}ms. DownloadMs={1}, AliasMs={2}, MatchMs={3}, ParseMs={4}, ContentChars={5}, ProgrammeMatches={6}, KeptProgrammes={7}, FinalKeys={8}, AliasCount={9}",
+            totalStopwatch.ElapsedMilliseconds,
+            downloadStopwatch.ElapsedMilliseconds,
+            aliasesStopwatch.ElapsedMilliseconds,
+            matchStopwatch.ElapsedMilliseconds,
+            parseStopwatch.ElapsedMilliseconds,
+            content.Length,
+            seenProgrammes,
+            keptProgrammes,
+            guide.Count,
+            channelAliases.Count);
+
         return guide;
+    }
+
+    private static int CountMissingGuide(
+        IReadOnlyDictionary<string, GuideInfo> results,
+        IReadOnlyList<int> liveIds)
+    {
+        var missing = 0;
+        foreach (var streamId in liveIds)
+        {
+            if (IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
+            {
+                missing++;
+            }
+        }
+
+        return missing;
+    }
+
+    private static void LogGuidePerf(string scope, string message, params object?[] args)
+    {
+        var formatted = args.Length == 0 ? message : string.Format(message, args);
+        Trace.WriteLine($"[XtreamGuide:{scope}] {formatted}");
     }
 
     private MediaItem CreateLiveItem(
