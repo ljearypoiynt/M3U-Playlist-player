@@ -10,8 +10,6 @@ namespace M3UPlaylistPlayer.Desktop.Services;
 public sealed class XtreamClient
 {
     private const int MaxGuideIdsPerRequest = 300;
-    private const int BulkGuideThreshold = 12;
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -105,21 +103,7 @@ public sealed class XtreamClient
             _ => new GuideInfo(null, null),
             StringComparer.OrdinalIgnoreCase);
 
-        if (liveIds.Length > BulkGuideThreshold)
-        {
-            try
-            {
-                await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
-                return results;
-            }
-            catch
-            {
-                lock (_guideLock)
-                {
-                    _xmltvGuideLoad = null;
-                }
-            }
-        }
+        FillMissingGuideFromCachedXmltv(results, liveIds);
 
         var shortGuideIds = liveIds
             .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
@@ -151,17 +135,7 @@ public sealed class XtreamClient
         });
 
         await Task.WhenAll(tasks);
-        try
-        {
-            await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
-        }
-        catch
-        {
-            lock (_guideLock)
-            {
-                _xmltvGuideLoad = null;
-            }
-        }
+        FillMissingGuideFromCachedXmltv(results, liveIds);
 
         return results;
     }
@@ -382,6 +356,51 @@ public sealed class XtreamClient
         }
 
         var xmltvGuide = await GetXmltvGuideAsync(cancellationToken);
+        foreach (var streamId in liveIds)
+        {
+            var key = $"live-{streamId}";
+            if (!IsMissingGuide(results.GetValueOrDefault(key)))
+            {
+                continue;
+            }
+
+            string? epgId;
+            string? name;
+            lock (_guideLock)
+            {
+                _epgIdsByLiveStreamId.TryGetValue(streamId, out epgId);
+                _namesByLiveStreamId.TryGetValue(streamId, out name);
+            }
+
+            if (!string.IsNullOrWhiteSpace(epgId) && xmltvGuide.TryGetValue(epgId, out var guide))
+            {
+                results[key] = guide;
+            }
+            else if (!string.IsNullOrWhiteSpace(name) &&
+                     xmltvGuide.TryGetValue($"name:{NormalizeGuideName(name)}", out guide))
+            {
+                results[key] = guide;
+            }
+        }
+    }
+
+    private void FillMissingGuideFromCachedXmltv(
+        Dictionary<string, GuideInfo> results,
+        IReadOnlyList<int> liveIds)
+    {
+        IReadOnlyDictionary<string, GuideInfo>? xmltvGuide;
+        lock (_guideLock)
+        {
+            xmltvGuide = _xmltvGuideCache is not null && _xmltvGuideExpires > DateTimeOffset.UtcNow
+                ? _xmltvGuideCache
+                : null;
+        }
+
+        if (xmltvGuide is null)
+        {
+            return;
+        }
+
         foreach (var streamId in liveIds)
         {
             var key = $"live-{streamId}";

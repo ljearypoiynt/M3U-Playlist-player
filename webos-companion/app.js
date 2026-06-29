@@ -69,7 +69,7 @@ var state = {
 
 var pageSize = 240;
 var editorPageSize = 120;
-var guidePageSize = 240;
+var guidePageSize = 12;
 var listSearchTimer = null;
 
 var els = {

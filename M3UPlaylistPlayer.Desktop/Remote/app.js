@@ -21,7 +21,7 @@ var state = {
 
 var pageSize = 80;
 var editorPageSize = 80;
-var guidePageSize = 240;
+var guidePageSize = 12;
 var searchTimer = null;
 var listSearchTimer = null;
 var deferredInstallPrompt = null;
