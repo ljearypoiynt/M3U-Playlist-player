@@ -15,6 +15,7 @@ public sealed class XtreamClient
     private const int MaxGuideIdsPerRequest = 300;
     private const int ShortGuideCacheMinutes = 4;
     private const int ShortGuideNegativeCooldownSeconds = 480;
+    private const int XmltvFailureCooldownSeconds = 600;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -33,6 +34,7 @@ public sealed class XtreamClient
     private readonly Dictionary<int, DateTimeOffset> _shortGuideCooldownByStreamId = [];
     private IReadOnlyDictionary<string, GuideInfo>? _xmltvGuideCache;
     private DateTimeOffset _xmltvGuideExpires = DateTimeOffset.MinValue;
+    private DateTimeOffset _xmltvRetryAfter = DateTimeOffset.MinValue;
     private Task<IReadOnlyDictionary<string, GuideInfo>>? _xmltvGuideLoad;
 
     public XtreamClient(XtreamSettings settings)
@@ -144,28 +146,39 @@ public sealed class XtreamClient
         var xmltvFillAfter = xmltvFillBefore;
         if (xmltvFillBefore > 0)
         {
-            var xmltvFillStopwatch = Stopwatch.StartNew();
-            try
-            {
-                await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
-            }
-            catch (Exception ex)
+            if (TryGetXmltvFailureCooldown(out var xmltvCooldownRemaining))
             {
                 LogGuidePerf(
                     requestId,
-                    "XMLTV fill failed in {0}ms. ErrorType={1}",
-                    xmltvFillStopwatch.ElapsedMilliseconds,
-                    ex.GetType().Name);
+                    "XMLTV fill skipped due to cooldown. MissingBefore={0}, RetryInSeconds={1}",
+                    xmltvFillBefore,
+                    (int)Math.Ceiling(xmltvCooldownRemaining.TotalSeconds));
             }
+            else
+            {
+                var xmltvFillStopwatch = Stopwatch.StartNew();
+                try
+                {
+                    await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    LogGuidePerf(
+                        requestId,
+                        "XMLTV fill failed in {0}ms. ErrorType={1}",
+                        xmltvFillStopwatch.ElapsedMilliseconds,
+                        ex.GetType().Name);
+                }
 
-            xmltvFillStopwatch.Stop();
-            xmltvFillAfter = CountMissingGuide(results, liveIds);
-            LogGuidePerf(
-                requestId,
-                "XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
-                xmltvFillStopwatch.ElapsedMilliseconds,
-                xmltvFillBefore,
-                xmltvFillAfter);
+                xmltvFillStopwatch.Stop();
+                xmltvFillAfter = CountMissingGuide(results, liveIds);
+                LogGuidePerf(
+                    requestId,
+                    "XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
+                    xmltvFillStopwatch.ElapsedMilliseconds,
+                    xmltvFillBefore,
+                    xmltvFillAfter);
+            }
         }
         else
         {
@@ -600,7 +613,8 @@ public sealed class XtreamClient
 
         lock (_guideLock)
         {
-            if (_xmltvGuideCache is not null && _xmltvGuideExpires > DateTimeOffset.UtcNow)
+            var now = DateTimeOffset.UtcNow;
+            if (_xmltvGuideCache is not null && _xmltvGuideExpires > now)
             {
                 start.Stop();
                 LogGuidePerf(
@@ -609,6 +623,11 @@ public sealed class XtreamClient
                     start.ElapsedMilliseconds,
                     _xmltvGuideCache.Count);
                 return _xmltvGuideCache;
+            }
+
+            if (_xmltvRetryAfter > now)
+            {
+                throw new InvalidOperationException("XMLTV load is cooling down after a previous failure.");
             }
 
             _xmltvGuideLoad ??= LoadXmltvGuideAsync(cancellationToken);
@@ -630,6 +649,7 @@ public sealed class XtreamClient
                     _xmltvGuideLoad = null;
                 }
 
+                _xmltvRetryAfter = DateTimeOffset.UtcNow.AddSeconds(XmltvFailureCooldownSeconds);
                 staleGuide ??= _xmltvGuideCache;
             }
 
@@ -651,6 +671,7 @@ public sealed class XtreamClient
         {
             _xmltvGuideCache = guide;
             _xmltvGuideExpires = DateTimeOffset.UtcNow.AddMinutes(20);
+            _xmltvRetryAfter = DateTimeOffset.MinValue;
             if (ReferenceEquals(_xmltvGuideLoad, loadTask))
             {
                 _xmltvGuideLoad = null;
@@ -665,6 +686,23 @@ public sealed class XtreamClient
             guide.Count);
 
         return guide;
+    }
+
+    private bool TryGetXmltvFailureCooldown(out TimeSpan remaining)
+    {
+        lock (_guideLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_xmltvRetryAfter <= now)
+            {
+                _xmltvRetryAfter = DateTimeOffset.MinValue;
+                remaining = TimeSpan.Zero;
+                return false;
+            }
+
+            remaining = _xmltvRetryAfter - now;
+            return true;
+        }
     }
 
     private async Task<IReadOnlyDictionary<string, GuideInfo>> LoadXmltvGuideAsync(CancellationToken cancellationToken)

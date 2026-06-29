@@ -1,4 +1,4 @@
-var CACHE_NAME = 'm3u-remote-v1';
+var CACHE_NAME = 'm3u-remote-v2';
 var CORE_ASSETS = [
   '/remote',
   '/remote/styles.css',
