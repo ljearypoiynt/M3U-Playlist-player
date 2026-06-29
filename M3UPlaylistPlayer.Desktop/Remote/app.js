@@ -25,6 +25,7 @@ var guidePageSize = 12;
 var searchTimer = null;
 var listSearchTimer = null;
 var deferredInstallPrompt = null;
+var installPromptAvailable = false;
 
 var els = {
   remoteManifest: document.getElementById('remoteManifest'),
@@ -58,23 +59,39 @@ updateManifestLink();
 window.addEventListener('beforeinstallprompt', function (event) {
   event.preventDefault();
   deferredInstallPrompt = event;
-  els.installApp.hidden = false;
+  installPromptAvailable = true;
+  updateInstallButton();
 });
 
 window.addEventListener('appinstalled', function () {
   deferredInstallPrompt = null;
-  els.installApp.hidden = true;
+  installPromptAvailable = false;
+  updateInstallButton();
 });
+
+if (window.matchMedia) {
+  var standaloneDisplayQuery = window.matchMedia('(display-mode: standalone)');
+  if (standaloneDisplayQuery.addEventListener) {
+    standaloneDisplayQuery.addEventListener('change', updateInstallButton);
+  } else if (standaloneDisplayQuery.addListener) {
+    standaloneDisplayQuery.addListener(updateInstallButton);
+  }
+}
 
 els.installApp.addEventListener('click', function () {
   if (!deferredInstallPrompt) {
+    setStatus('Browser menu');
     return;
   }
 
-  deferredInstallPrompt.prompt();
-  deferredInstallPrompt.userChoice.finally(function () {
+  var promptEvent = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  installPromptAvailable = false;
+
+  promptEvent.prompt();
+  promptEvent.userChoice.finally(function () {
     deferredInstallPrompt = null;
-    els.installApp.hidden = true;
+    updateInstallButton();
   });
 });
 
@@ -978,6 +995,23 @@ function updateManifestLink() {
   els.remoteManifest.href = '/remote/manifest.webmanifest?session=' + encodeURIComponent(state.sessionId || '');
 }
 
+function isStandaloneApp() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+}
+
+function updateInstallButton() {
+  if (!els.installApp) {
+    return;
+  }
+
+  els.installApp.hidden = isStandaloneApp();
+  els.installApp.textContent = 'Install';
+  els.installApp.title = installPromptAvailable
+    ? 'Install IPTV Sidekick on this device'
+    : 'Use the browser install option if the prompt does not open';
+}
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('/remote-sw.js', {
@@ -987,6 +1021,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+updateInstallButton();
 updateButtons();
 if (ensureSession()) {
   loadStatus();
