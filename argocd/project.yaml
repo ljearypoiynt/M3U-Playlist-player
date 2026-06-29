@@ -1,12 +1,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: m3u-playlist-player-project
+  name: iptv-sidekick-project
   namespace: argocd
   finalizers:
     - argoproj.io/resources-finalizer
 spec:
-  description: M3U Playlist Player gateway
+  description: IPTV Sidekick gateway
 
   destinations:
     - namespace: m3u-playlist-player
@@ -21,7 +21,7 @@ spec:
       kind: "*"
 
   sourceRepos:
-    - https://github.com/ljearypoiynt/M3U-Playlist-player.git
+    - git@github.com:ljearypoiynt/M3U-Playlist-player.git
 
   orphanedResources:
     warn: true

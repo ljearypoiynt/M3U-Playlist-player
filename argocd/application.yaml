@@ -1,15 +1,15 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: m3u-playlist-player
+  name: iptv-sidekick
   namespace: argocd
   finalizers:
     - argoproj.io/resources-finalizer
 spec:
-  project: m3u-playlist-player-project
+  project: iptv-sidekick-project
 
   source:
-    repoURL: https://github.com/ljearypoiynt/M3U-Playlist-player.git
+    repoURL: git@github.com:ljearypoiynt/M3U-Playlist-player.git
     targetRevision: HEAD
     path: k8s
 

@@ -93,6 +93,8 @@ TV playback requires FFmpeg on the desktop machine. The desktop app uses it to t
 
 ## Gateway Deployment
 
+The ArgoCD application is named `iptv-sidekick` for IPTV Sidekick.
+
 The Kubernetes deployment runs the headless gateway project in `M3UPlaylistPlayer.Gateway`; the Avalonia GUI is not part of the container image.
 
 Build locally:
