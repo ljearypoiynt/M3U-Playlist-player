@@ -5,6 +5,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Threading;
+using System.Xml;
 using M3UPlaylistPlayer.Desktop.Models;
 
 namespace M3UPlaylistPlayer.Desktop.Services;
@@ -164,9 +165,9 @@ public sealed class XtreamClient
                 {
                     LogGuidePerf(
                         requestId,
-                        "XMLTV fill failed in {0}ms. ErrorType={1}",
+                        "XMLTV fill failed in {0}ms. {1}",
                         xmltvFillStopwatch.ElapsedMilliseconds,
-                        ex.GetType().Name);
+                        FormatGuideException(ex));
                 }
 
                 xmltvFillStopwatch.Stop();
@@ -639,8 +640,9 @@ public sealed class XtreamClient
         {
             guide = await loadTask;
         }
-        catch
+        catch (Exception ex)
         {
+            var retryAfter = DateTimeOffset.UtcNow.AddSeconds(XmltvFailureCooldownSeconds);
             lock (_guideLock)
             {
                 if (ReferenceEquals(_xmltvGuideLoad, loadTask))
@@ -648,13 +650,21 @@ public sealed class XtreamClient
                     _xmltvGuideLoad = null;
                 }
 
-                _xmltvRetryAfter = DateTimeOffset.UtcNow.AddSeconds(XmltvFailureCooldownSeconds);
+                _xmltvRetryAfter = retryAfter;
                 staleGuide ??= _xmltvGuideCache;
             }
 
+            start.Stop();
+            LogGuidePerf(
+                "load-fail",
+                "GetXmltvGuideAsync load failed in {0}ms. {1}, StaleAvailable={2}, RetryInSeconds={3}",
+                start.ElapsedMilliseconds,
+                FormatGuideException(ex),
+                staleGuide is not null,
+                XmltvFailureCooldownSeconds);
+
             if (staleGuide is not null)
             {
-                start.Stop();
                 LogGuidePerf(
                     "stale",
                     "GetXmltvGuideAsync returning stale cache in {0}ms. CachedChannels={1}",
@@ -702,6 +712,34 @@ public sealed class XtreamClient
             remaining = _xmltvRetryAfter - now;
             return true;
         }
+    }
+
+    private static string FormatGuideException(Exception ex)
+    {
+        var detail = $"ErrorType={ex.GetType().Name}, Message={SanitizeLogValue(ex.Message)}";
+
+        if (ex is XmlException xmlException)
+        {
+            detail += $", Line={xmlException.LineNumber}, Position={xmlException.LinePosition}";
+        }
+
+        if (ex.InnerException is not null)
+        {
+            detail += $", InnerType={ex.InnerException.GetType().Name}, InnerMessage={SanitizeLogValue(ex.InnerException.Message)}";
+        }
+
+        return detail;
+    }
+
+    private static string SanitizeLogValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<empty>";
+        }
+
+        var sanitized = Regex.Replace(value, "\\s+", " ").Trim();
+        return sanitized.Length <= 260 ? sanitized : sanitized[..260] + "...";
     }
 
     private async Task<IReadOnlyDictionary<string, GuideInfo>> LoadXmltvGuideAsync(CancellationToken cancellationToken)
