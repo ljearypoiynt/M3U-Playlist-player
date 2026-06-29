@@ -100,12 +100,25 @@ public sealed class XtreamClient
         IReadOnlyCollection<string> ids,
         CancellationToken cancellationToken)
     {
+        return await GetGuideAsync(ids, includeMainGuide: true, includeShortGuide: false, cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<string, GuideInfo>> GetGuideAsync(
+        IReadOnlyCollection<string> ids,
+        bool includeMainGuide,
+        bool includeShortGuide,
+        CancellationToken cancellationToken)
+    {
         var totalStopwatch = Stopwatch.StartNew();
         var requestId = Guid.NewGuid().ToString("N")[..8];
+        var source = includeMainGuide
+            ? includeShortGuide ? "full" : "main"
+            : includeShortGuide ? "short" : "none";
         LogGuidePerf(
             requestId,
-            "GetGuideAsync start. RequestedIds={0}",
-            ids.Count);
+            "GetGuideAsync start. RequestedIds={0}, Source={1}",
+            ids.Count,
+            source);
 
         var normalizeStopwatch = Stopwatch.StartNew();
         var liveIds = ids
@@ -129,63 +142,87 @@ public sealed class XtreamClient
             _ => new GuideInfo(null, null),
             StringComparer.OrdinalIgnoreCase);
 
-        var cachedFillBefore = CountMissingGuide(results, liveIds);
-        var cachedFillStopwatch = Stopwatch.StartNew();
-        FillMissingGuideFromCachedXmltv(results, liveIds);
-        cachedFillStopwatch.Stop();
-        var cachedFillAfter = CountMissingGuide(results, liveIds);
-
-        LogGuidePerf(
-            requestId,
-            "Cached XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
-            cachedFillStopwatch.ElapsedMilliseconds,
-            cachedFillBefore,
-            cachedFillAfter);
-
-        var xmltvFillBefore = CountMissingGuide(results, liveIds);
-        var xmltvFillAfter = xmltvFillBefore;
-        if (xmltvFillBefore > 0)
+        if (includeMainGuide)
         {
-            if (TryGetXmltvFailureCooldown(out var xmltvCooldownRemaining))
+            var cachedFillBefore = CountMissingGuide(results, liveIds);
+            var cachedFillStopwatch = Stopwatch.StartNew();
+            FillMissingGuideFromCachedXmltv(results, liveIds);
+            cachedFillStopwatch.Stop();
+            var cachedFillAfter = CountMissingGuide(results, liveIds);
+
+            LogGuidePerf(
+                requestId,
+                "Cached XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
+                cachedFillStopwatch.ElapsedMilliseconds,
+                cachedFillBefore,
+                cachedFillAfter);
+
+            var xmltvFillBefore = CountMissingGuide(results, liveIds);
+            var xmltvFillAfter = xmltvFillBefore;
+            if (xmltvFillBefore > 0)
             {
-                LogGuidePerf(
-                    requestId,
-                    "XMLTV fill skipped due to cooldown. MissingBefore={0}, RetryInSeconds={1}",
-                    xmltvFillBefore,
-                    (int)Math.Ceiling(xmltvCooldownRemaining.TotalSeconds));
-            }
-            else
-            {
-                var xmltvFillStopwatch = Stopwatch.StartNew();
-                try
-                {
-                    await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
-                }
-                catch (Exception ex)
+                if (TryGetXmltvFailureCooldown(out var xmltvCooldownRemaining))
                 {
                     LogGuidePerf(
                         requestId,
-                        "XMLTV fill failed in {0}ms. {1}",
-                        xmltvFillStopwatch.ElapsedMilliseconds,
-                        FormatGuideException(ex));
+                        "XMLTV fill skipped due to cooldown. MissingBefore={0}, RetryInSeconds={1}",
+                        xmltvFillBefore,
+                        (int)Math.Ceiling(xmltvCooldownRemaining.TotalSeconds));
                 }
+                else
+                {
+                    var xmltvFillStopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogGuidePerf(
+                            requestId,
+                            "XMLTV fill failed in {0}ms. {1}",
+                            xmltvFillStopwatch.ElapsedMilliseconds,
+                            FormatGuideException(ex));
+                    }
 
-                xmltvFillStopwatch.Stop();
-                xmltvFillAfter = CountMissingGuide(results, liveIds);
+                    xmltvFillStopwatch.Stop();
+                    xmltvFillAfter = CountMissingGuide(results, liveIds);
+                    LogGuidePerf(
+                        requestId,
+                        "XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
+                        xmltvFillStopwatch.ElapsedMilliseconds,
+                        xmltvFillBefore,
+                        xmltvFillAfter);
+                }
+            }
+            else
+            {
                 LogGuidePerf(
                     requestId,
-                    "XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
-                    xmltvFillStopwatch.ElapsedMilliseconds,
-                    xmltvFillBefore,
-                    xmltvFillAfter);
+                    "XMLTV fill skipped. MissingBefore={0}",
+                    xmltvFillBefore);
             }
         }
         else
         {
             LogGuidePerf(
                 requestId,
-                "XMLTV fill skipped. MissingBefore={0}",
-                xmltvFillBefore);
+                "Main XMLTV fill skipped for Source={0}",
+                source);
+        }
+
+        if (!includeShortGuide)
+        {
+            totalStopwatch.Stop();
+            LogGuidePerf(
+                requestId,
+                "GetGuideAsync done in {0}ms. Source={1}, MissingAfterMain={2}, Returned={3}",
+                totalStopwatch.ElapsedMilliseconds,
+                source,
+                CountMissingGuide(results, liveIds),
+                results.Count);
+
+            return results;
         }
 
         var shortGuideIds = new List<int>(liveIds.Length);
@@ -299,16 +336,21 @@ public sealed class XtreamClient
             shortGuideTotalMs);
 
         var fallbackBefore = CountMissingGuide(results, liveIds);
-        var fallbackStopwatch = Stopwatch.StartNew();
-        FillMissingGuideFromCachedXmltv(results, liveIds);
-        fallbackStopwatch.Stop();
-        var fallbackAfter = CountMissingGuide(results, liveIds);
+        var fallbackAfter = fallbackBefore;
+        if (includeMainGuide)
+        {
+            var fallbackStopwatch = Stopwatch.StartNew();
+            FillMissingGuideFromCachedXmltv(results, liveIds);
+            fallbackStopwatch.Stop();
+            fallbackAfter = CountMissingGuide(results, liveIds);
+        }
 
         totalStopwatch.Stop();
         LogGuidePerf(
             requestId,
-            "GetGuideAsync done in {0}ms. MissingBeforeFallback={1}, MissingAfterFallback={2}, Returned={3}",
+            "GetGuideAsync done in {0}ms. Source={1}, MissingBeforeFallback={2}, MissingAfterFallback={3}, Returned={4}",
             totalStopwatch.ElapsedMilliseconds,
+            source,
             fallbackBefore,
             fallbackAfter,
             results.Count);

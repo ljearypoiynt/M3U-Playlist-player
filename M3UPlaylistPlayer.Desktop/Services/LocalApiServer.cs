@@ -577,7 +577,7 @@ public sealed class LocalApiServer
             });
         });
 
-        _app.MapGet("/api/sessions/{sessionId}/guide", async (string sessionId, string? ids, CancellationToken token) =>
+        _app.MapGet("/api/sessions/{sessionId}/guide", async (string sessionId, string? ids, string? source, CancellationToken token) =>
         {
             if (!_sessionManager.TryGetSession(sessionId, out var session))
             {
@@ -589,12 +589,16 @@ public sealed class LocalApiServer
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(300)
                 .ToArray();
-            var guide = await session.Client.GetGuideAsync(requestedIds, token);
+            var guideSource = ParseGuideSource(source);
+            var guide = await session.Client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+            var missingIds = GetMissingGuideIds(guide);
 
             return Results.Json(new
             {
                 sessionId = session.Id,
+                source = guideSource.Name,
                 count = guide.Count,
+                missingIds,
                 guide
             });
         });
@@ -775,18 +779,22 @@ public sealed class LocalApiServer
             });
         });
 
-        _app.MapGet("/api/guide", async (string? ids, CancellationToken token) =>
+        _app.MapGet("/api/guide", async (string? ids, string? source, CancellationToken token) =>
         {
             var requestedIds = (ids ?? string.Empty)
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(300)
                 .ToArray();
-            var guide = await _client.GetGuideAsync(requestedIds, token);
+            var guideSource = ParseGuideSource(source);
+            var guide = await _client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+            var missingIds = GetMissingGuideIds(guide);
 
             return Results.Json(new
             {
+                source = guideSource.Name,
                 count = guide.Count,
+                missingIds,
                 guide
             });
         });
@@ -1103,6 +1111,31 @@ public sealed class LocalApiServer
                string.Equals(kind, "movie", StringComparison.OrdinalIgnoreCase)
             ? MediaKind.Movies
             : MediaKind.Live;
+    }
+
+    private static (bool IncludeMainGuide, bool IncludeShortGuide, string Name) ParseGuideSource(string? source)
+    {
+        return source?.Trim().ToLowerInvariant() switch
+        {
+            "short" or "fallback" => (false, true, "short"),
+            "full" or "all" => (true, true, "full"),
+            _ => (true, false, "main")
+        };
+    }
+
+    private static string[] GetMissingGuideIds(IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide)
+    {
+        return guide
+            .Where(pair => IsMissingGuide(pair.Value))
+            .Select(pair => pair.Key)
+            .ToArray();
+    }
+
+    private static bool IsMissingGuide(XtreamClient.GuideInfo? guide)
+    {
+        return guide is null ||
+               string.IsNullOrWhiteSpace(guide.NowTitle) &&
+               string.IsNullOrWhiteSpace(guide.NextTitle);
     }
 
     private static string NormalizeRemoteKind(string? kind)

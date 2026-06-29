@@ -1550,39 +1550,53 @@ function loadGuideForItems(items, requestId) {
   }
 
   if (ids.length > 0) {
-    requestGuideChunk(ids, 0, requestId);
+    requestGuideChunk(ids, 0, requestId, 'main');
   }
 }
 
-function requestGuideChunk(ids, offset, requestId) {
+function requestGuideChunk(ids, offset, requestId, source) {
   var chunk;
+  var guideSource = source || 'main';
 
   if (requestId !== state.requestId || offset >= ids.length) {
     return;
   }
 
   chunk = ids.slice(offset, offset + guidePageSize);
-  fetchJson(apiPath('/guide?ids=' + encodeURIComponent(chunk.join(','))))
+  fetchJson(apiPath('/guide?source=' + encodeURIComponent(guideSource) + '&ids=' + encodeURIComponent(chunk.join(','))))
     .then(function (data) {
       var guide = data.guide || {};
+      var serverMissingIds = data.missingIds || data.MissingIds || [];
+      var missingLookup = {};
+      var shortIds = [];
       var index;
       var id;
       var item;
       var info;
+      var isMissing;
 
       if (requestId !== state.requestId) {
         return;
+      }
+
+      for (index = 0; index < serverMissingIds.length; index += 1) {
+        missingLookup[serverMissingIds[index]] = true;
       }
 
       for (index = 0; index < chunk.length; index += 1) {
         id = chunk[index];
         item = findItemById(id);
         info = guide[id];
+        isMissing = missingLookup[id] || !info || isMissingGuideInfo(info);
 
-        state.guideLoaded[id] = true;
-        state.guideLoading[id] = false;
+        if (guideSource === 'main' && isMissing) {
+          shortIds.push(id);
+        } else {
+          state.guideLoaded[id] = true;
+          state.guideLoading[id] = false;
+        }
 
-        if (item && info) {
+        if (item && info && !isMissing) {
           item.nowTitle = info.nowTitle || info.NowTitle || item.nowTitle;
           item.nextTitle = info.nextTitle || info.NextTitle || item.nextTitle;
           item.nowDescription = info.nowDescription || info.NowDescription || item.nowDescription;
@@ -1597,6 +1611,10 @@ function requestGuideChunk(ids, offset, requestId) {
           updateGuideCells(item);
         }
       }
+
+      if (guideSource === 'main' && shortIds.length > 0) {
+        requestGuideChunk(shortIds, 0, requestId, 'short');
+      }
     })
     .catch(function () {
       var index;
@@ -1606,8 +1624,16 @@ function requestGuideChunk(ids, offset, requestId) {
       }
     })
     .then(function () {
-      requestGuideChunk(ids, offset + guidePageSize, requestId);
+      requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
     });
+}
+
+function isMissingGuideInfo(info) {
+  if (!info) {
+    return true;
+  }
+
+  return !(info.nowTitle || info.NowTitle || info.nextTitle || info.NextTitle);
 }
 
 function findItemById(id) {

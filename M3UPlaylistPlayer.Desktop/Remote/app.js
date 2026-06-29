@@ -695,42 +695,60 @@ function loadGuideForItems(items, requestId) {
     }
   }
 
-  requestGuideChunk(ids, 0, requestId);
+  requestGuideChunk(ids, 0, requestId, 'main');
 }
 
-function requestGuideChunk(ids, offset, requestId) {
+function requestGuideChunk(ids, offset, requestId, source) {
   var chunk;
+  var guideSource = source || 'main';
 
   if (requestId !== state.requestId || offset >= ids.length) {
     return;
   }
 
   chunk = ids.slice(offset, offset + guidePageSize);
-  fetchJson(apiPath('/guide?ids=' + encodeURIComponent(chunk.join(','))))
+  fetchJson(apiPath('/guide?source=' + encodeURIComponent(guideSource) + '&ids=' + encodeURIComponent(chunk.join(','))))
     .then(function (data) {
       var guide = data.guide || {};
+      var serverMissingIds = data.missingIds || data.MissingIds || [];
+      var missingLookup = {};
+      var shortIds = [];
       var index;
       var item;
       var info;
+      var isMissing;
 
       if (requestId !== state.requestId) {
         return;
       }
 
+      for (index = 0; index < serverMissingIds.length; index += 1) {
+        missingLookup[serverMissingIds[index]] = true;
+      }
+
       for (index = 0; index < chunk.length; index += 1) {
         item = findItemById(chunk[index]);
         info = guide[chunk[index]];
+        isMissing = missingLookup[chunk[index]] || !info || isMissingGuideInfo(info);
 
-        state.guideLoaded[chunk[index]] = true;
-        state.guideLoading[chunk[index]] = false;
+        if (guideSource === 'main' && isMissing) {
+          shortIds.push(chunk[index]);
+        } else {
+          state.guideLoaded[chunk[index]] = true;
+          state.guideLoading[chunk[index]] = false;
+        }
 
-        if (item && info) {
+        if (item && info && !isMissing) {
           applyGuide(item, info);
         }
 
         if (item) {
           updateItemGuide(item);
         }
+      }
+
+      if (guideSource === 'main' && shortIds.length > 0) {
+        requestGuideChunk(shortIds, 0, requestId, 'short');
       }
     })
     .catch(function () {
@@ -741,8 +759,16 @@ function requestGuideChunk(ids, offset, requestId) {
       }
     })
     .then(function () {
-      requestGuideChunk(ids, offset + guidePageSize, requestId);
+      requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
     });
+}
+
+function isMissingGuideInfo(info) {
+  if (!info) {
+    return true;
+  }
+
+  return !(info.nowTitle || info.NowTitle || info.nextTitle || info.NextTitle);
 }
 
 function applyGuide(item, info) {
