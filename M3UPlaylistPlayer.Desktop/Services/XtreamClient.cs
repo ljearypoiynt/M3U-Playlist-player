@@ -14,6 +14,7 @@ public sealed class XtreamClient
 {
     private const int MaxGuideIdsPerRequest = 300;
     private const int ShortGuideCacheMinutes = 4;
+    private const int ShortGuideNegativeCooldownSeconds = 90;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -29,6 +30,7 @@ public sealed class XtreamClient
     private readonly Dictionary<int, string> _epgIdsByLiveStreamId = [];
     private readonly Dictionary<int, string> _namesByLiveStreamId = [];
     private readonly Dictionary<int, CachedShortGuideEntry> _shortGuideCacheByStreamId = [];
+    private readonly Dictionary<int, DateTimeOffset> _shortGuideCooldownByStreamId = [];
     private IReadOnlyDictionary<string, GuideInfo>? _xmltvGuideCache;
     private DateTimeOffset _xmltvGuideExpires = DateTimeOffset.MinValue;
     private Task<IReadOnlyDictionary<string, GuideInfo>>? _xmltvGuideLoad;
@@ -173,41 +175,51 @@ public sealed class XtreamClient
                 xmltvFillBefore);
         }
 
-        var shortGuideIds = liveIds
-            .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
-            .ToArray();
-
-        var shortCacheFillBefore = shortGuideIds.Length;
-        var shortCacheHits = 0;
-        if (shortGuideIds.Length > 0)
+        var shortGuideIds = new List<int>(liveIds.Length);
+        var shortCacheFillBefore = CountMissingGuide(results, liveIds);
+        var resolvedCacheHits = 0;
+        var cooldownSkips = 0;
+        foreach (var streamId in liveIds)
         {
-            foreach (var streamId in shortGuideIds)
+            var key = $"live-{streamId}";
+            if (!IsMissingGuide(results.GetValueOrDefault(key)))
             {
-                if (TryGetCachedShortGuide(streamId, out var cachedGuide))
+                continue;
+            }
+
+            if (TryGetCachedShortGuide(streamId, out var cachedGuide))
+            {
+                results[key] = cachedGuide;
+                if (!IsMissingGuide(cachedGuide))
                 {
-                    results[$"live-{streamId}"] = cachedGuide;
-                    shortCacheHits++;
+                    resolvedCacheHits++;
+                    continue;
+                }
+
+                if (IsShortGuideCooldownActive(streamId))
+                {
+                    cooldownSkips++;
+                    continue;
                 }
             }
 
-            shortGuideIds = liveIds
-                .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
-                .ToArray();
+            shortGuideIds.Add(streamId);
         }
 
         LogGuidePerf(
             requestId,
-            "Short EPG cache fill done. MissingBefore={0}, CacheHits={1}, MissingAfter={2}",
+            "Short EPG cache fill done. MissingBefore={0}, ResolvedCacheHits={1}, CooldownSkips={2}, MissingAfter={3}",
             shortCacheFillBefore,
-            shortCacheHits,
-            shortGuideIds.Length);
+            resolvedCacheHits,
+            cooldownSkips,
+            shortGuideIds.Count);
 
         LogGuidePerf(
             requestId,
             "Short EPG stage prepared. RequestsNeeded={0}",
-            shortGuideIds.Length);
+            shortGuideIds.Count);
 
-        if (shortGuideIds.Length == 0)
+        if (shortGuideIds.Count == 0)
         {
             totalStopwatch.Stop();
             LogGuidePerf(
@@ -583,6 +595,8 @@ public sealed class XtreamClient
     private async Task<IReadOnlyDictionary<string, GuideInfo>> GetXmltvGuideAsync(CancellationToken cancellationToken)
     {
         var start = Stopwatch.StartNew();
+        Task<IReadOnlyDictionary<string, GuideInfo>> loadTask;
+        IReadOnlyDictionary<string, GuideInfo>? staleGuide;
 
         lock (_guideLock)
         {
@@ -598,14 +612,49 @@ public sealed class XtreamClient
             }
 
             _xmltvGuideLoad ??= LoadXmltvGuideAsync(cancellationToken);
+            loadTask = _xmltvGuideLoad;
+            staleGuide = _xmltvGuideCache;
         }
 
-        var guide = await _xmltvGuideLoad;
+        IReadOnlyDictionary<string, GuideInfo> guide;
+        try
+        {
+            guide = await loadTask;
+        }
+        catch
+        {
+            lock (_guideLock)
+            {
+                if (ReferenceEquals(_xmltvGuideLoad, loadTask))
+                {
+                    _xmltvGuideLoad = null;
+                }
+
+                staleGuide ??= _xmltvGuideCache;
+            }
+
+            if (staleGuide is not null)
+            {
+                start.Stop();
+                LogGuidePerf(
+                    "stale",
+                    "GetXmltvGuideAsync returning stale cache in {0}ms. CachedChannels={1}",
+                    start.ElapsedMilliseconds,
+                    staleGuide.Count);
+                return staleGuide;
+            }
+
+            throw;
+        }
+
         lock (_guideLock)
         {
             _xmltvGuideCache = guide;
             _xmltvGuideExpires = DateTimeOffset.UtcNow.AddMinutes(20);
-            _xmltvGuideLoad = null;
+            if (ReferenceEquals(_xmltvGuideLoad, loadTask))
+            {
+                _xmltvGuideLoad = null;
+            }
         }
 
         start.Stop();
@@ -633,10 +682,13 @@ public sealed class XtreamClient
         var parseStopwatch = Stopwatch.StartNew();
         var seenProgrammes = 0;
         var keptProgrammes = 0;
+        string? parseErrorType = null;
+        string? parseErrorMessage = null;
 
         var settings = new XmlReaderSettings
         {
             Async = true,
+            ConformanceLevel = ConformanceLevel.Fragment,
             DtdProcessing = DtdProcessing.Ignore,
             IgnoreComments = true,
             IgnoreWhitespace = true,
@@ -644,70 +696,83 @@ public sealed class XtreamClient
         };
 
         using var reader = XmlReader.Create(stream, settings);
-        while (await reader.ReadAsync())
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (reader.NodeType != XmlNodeType.Element)
+            while (await reader.ReadAsync())
             {
-                continue;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (string.Equals(reader.Name, "channel", StringComparison.OrdinalIgnoreCase))
-            {
-                await ReadChannelAliasesAsync(reader, channelAliases, cancellationToken);
-                continue;
-            }
-
-            if (!string.Equals(reader.Name, "programme", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            seenProgrammes++;
-
-            var channelId = reader.GetAttribute("channel");
-            var start = ParseXmltvTime(reader.GetAttribute("start"));
-            var stop = ParseXmltvTime(reader.GetAttribute("stop"));
-            if (string.IsNullOrWhiteSpace(channelId) || start is null || stop is null || stop <= now)
-            {
-                await SkipElementAsync(reader);
-                continue;
-            }
-
-            var (title, description) = await ReadProgrammeDetailsAsync(reader, cancellationToken);
-            if (string.IsNullOrWhiteSpace(title))
-            {
-                continue;
-            }
-
-            keptProgrammes++;
-
-            byChannel.TryGetValue(channelId, out var pair);
-            pair ??= new XmltvGuidePair();
-            if (start <= now && stop > now)
-            {
-                pair = pair with
+                if (reader.NodeType != XmlNodeType.Element)
                 {
-                    Now = title,
-                    NowDescription = description,
-                    NowStart = FormatGuideTime(start),
-                    NowEnd = FormatGuideTime(stop)
-                };
-            }
-            else if (start > now && (pair.NextStartSort is null || start < pair.NextStartSort))
-            {
-                pair = pair with
-                {
-                    Next = title,
-                    NextDescription = description,
-                    NextStart = FormatGuideTime(start),
-                    NextEnd = FormatGuideTime(stop),
-                    NextStartSort = start
-                };
-            }
+                    continue;
+                }
 
-            byChannel[channelId] = pair;
+                if (string.Equals(reader.Name, "channel", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ReadChannelAliasesAsync(reader, channelAliases, cancellationToken);
+                    continue;
+                }
+
+                if (!string.Equals(reader.Name, "programme", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                seenProgrammes++;
+
+                var channelId = reader.GetAttribute("channel");
+                var start = ParseXmltvTime(reader.GetAttribute("start"));
+                var stop = ParseXmltvTime(reader.GetAttribute("stop"));
+                if (string.IsNullOrWhiteSpace(channelId) || start is null || stop is null || stop <= now)
+                {
+                    await SkipElementAsync(reader);
+                    continue;
+                }
+
+                var (title, description) = await ReadProgrammeDetailsAsync(reader, cancellationToken);
+                if (string.IsNullOrWhiteSpace(title))
+                {
+                    continue;
+                }
+
+                keptProgrammes++;
+
+                byChannel.TryGetValue(channelId, out var pair);
+                pair ??= new XmltvGuidePair();
+                if (start <= now && stop > now)
+                {
+                    pair = pair with
+                    {
+                        Now = title,
+                        NowDescription = description,
+                        NowStart = FormatGuideTime(start),
+                        NowEnd = FormatGuideTime(stop)
+                    };
+                }
+                else if (start > now && (pair.NextStartSort is null || start < pair.NextStartSort))
+                {
+                    pair = pair with
+                    {
+                        Next = title,
+                        NextDescription = description,
+                        NextStart = FormatGuideTime(start),
+                        NextEnd = FormatGuideTime(stop),
+                        NextStartSort = start
+                    };
+                }
+
+                byChannel[channelId] = pair;
+            }
+        }
+        catch (XmlException ex)
+        {
+            parseErrorType = nameof(XmlException);
+            parseErrorMessage = ex.Message;
+
+            if (byChannel.Count == 0)
+            {
+                throw;
+            }
         }
 
         parseStopwatch.Stop();
@@ -734,6 +799,18 @@ public sealed class XtreamClient
         }
 
         totalStopwatch.Stop();
+        if (!string.IsNullOrWhiteSpace(parseErrorType))
+        {
+            LogGuidePerf(
+                "xmltv",
+                "LoadXmltvGuideAsync recovered from {0}. ParsedChannels={1}, SeenProgrammes={2}, KeptProgrammes={3}, Message={4}",
+                parseErrorType,
+                byChannel.Count,
+                seenProgrammes,
+                keptProgrammes,
+                parseErrorMessage ?? string.Empty);
+        }
+
         LogGuidePerf(
             "xmltv",
             "LoadXmltvGuideAsync done in {0}ms. DownloadMs={1}, ParseMs={2}, ProgrammeMatches={3}, KeptProgrammes={4}, FinalKeys={5}, AliasCount={6}",
@@ -897,6 +974,34 @@ public sealed class XtreamClient
             _shortGuideCacheByStreamId[streamId] = new CachedShortGuideEntry(
                 guide,
                 DateTimeOffset.UtcNow.AddMinutes(ShortGuideCacheMinutes));
+
+            if (IsMissingGuide(guide))
+            {
+                _shortGuideCooldownByStreamId[streamId] = DateTimeOffset.UtcNow.AddSeconds(ShortGuideNegativeCooldownSeconds);
+            }
+            else
+            {
+                _shortGuideCooldownByStreamId.Remove(streamId);
+            }
+        }
+    }
+
+    private bool IsShortGuideCooldownActive(int streamId)
+    {
+        lock (_guideLock)
+        {
+            if (!_shortGuideCooldownByStreamId.TryGetValue(streamId, out var until))
+            {
+                return false;
+            }
+
+            if (until <= DateTimeOffset.UtcNow)
+            {
+                _shortGuideCooldownByStreamId.Remove(streamId);
+                return false;
+            }
+
+            return true;
         }
     }
 
