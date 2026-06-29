@@ -12,6 +12,7 @@ namespace M3UPlaylistPlayer.Desktop.Services;
 public sealed class XtreamClient
 {
     private const int MaxGuideIdsPerRequest = 300;
+    private const int ShortGuideCacheMinutes = 4;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -26,6 +27,7 @@ public sealed class XtreamClient
     private readonly object _guideLock = new();
     private readonly Dictionary<int, string> _epgIdsByLiveStreamId = [];
     private readonly Dictionary<int, string> _namesByLiveStreamId = [];
+    private readonly Dictionary<int, CachedShortGuideEntry> _shortGuideCacheByStreamId = [];
     private IReadOnlyDictionary<string, GuideInfo>? _xmltvGuideCache;
     private DateTimeOffset _xmltvGuideExpires = DateTimeOffset.MinValue;
     private Task<IReadOnlyDictionary<string, GuideInfo>>? _xmltvGuideLoad;
@@ -135,14 +137,86 @@ public sealed class XtreamClient
             cachedFillBefore,
             cachedFillAfter);
 
+        var xmltvFillBefore = CountMissingGuide(results, liveIds);
+        var xmltvFillAfter = xmltvFillBefore;
+        if (xmltvFillBefore > 0)
+        {
+            var xmltvFillStopwatch = Stopwatch.StartNew();
+            try
+            {
+                await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                LogGuidePerf(
+                    requestId,
+                    "XMLTV fill failed in {0}ms. ErrorType={1}",
+                    xmltvFillStopwatch.ElapsedMilliseconds,
+                    ex.GetType().Name);
+            }
+
+            xmltvFillStopwatch.Stop();
+            xmltvFillAfter = CountMissingGuide(results, liveIds);
+            LogGuidePerf(
+                requestId,
+                "XMLTV fill completed in {0}ms. MissingBefore={1}, MissingAfter={2}",
+                xmltvFillStopwatch.ElapsedMilliseconds,
+                xmltvFillBefore,
+                xmltvFillAfter);
+        }
+        else
+        {
+            LogGuidePerf(
+                requestId,
+                "XMLTV fill skipped. MissingBefore={0}",
+                xmltvFillBefore);
+        }
+
         var shortGuideIds = liveIds
             .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
             .ToArray();
+
+        var shortCacheFillBefore = shortGuideIds.Length;
+        var shortCacheHits = 0;
+        if (shortGuideIds.Length > 0)
+        {
+            foreach (var streamId in shortGuideIds)
+            {
+                if (TryGetCachedShortGuide(streamId, out var cachedGuide))
+                {
+                    results[$"live-{streamId}"] = cachedGuide;
+                    shortCacheHits++;
+                }
+            }
+
+            shortGuideIds = liveIds
+                .Where(streamId => IsMissingGuide(results.GetValueOrDefault($"live-{streamId}")))
+                .ToArray();
+        }
+
+        LogGuidePerf(
+            requestId,
+            "Short EPG cache fill done. MissingBefore={0}, CacheHits={1}, MissingAfter={2}",
+            shortCacheFillBefore,
+            shortCacheHits,
+            shortGuideIds.Length);
 
         LogGuidePerf(
             requestId,
             "Short EPG stage prepared. RequestsNeeded={0}",
             shortGuideIds.Length);
+
+        if (shortGuideIds.Length == 0)
+        {
+            totalStopwatch.Stop();
+            LogGuidePerf(
+                requestId,
+                "GetGuideAsync done in {0}ms. MissingBeforeFallback=0, MissingAfterFallback=0, Returned={1}",
+                totalStopwatch.ElapsedMilliseconds,
+                results.Count);
+
+            return results;
+        }
 
         long shortGuideTotalMs = 0;
         var shortGuideSuccess = 0;
@@ -163,15 +237,20 @@ public sealed class XtreamClient
                     results[$"live-{streamId}"] = guide;
                 }
 
+                CacheShortGuide(streamId, guide);
+
                 Interlocked.Add(ref shortGuideTotalMs, shortStopwatch.ElapsedMilliseconds);
                 Interlocked.Increment(ref shortGuideSuccess);
             }
             catch
             {
+                var emptyGuide = new GuideInfo(null, null);
                 lock (results)
                 {
-                    results[$"live-{streamId}"] = new GuideInfo(null, null);
+                    results[$"live-{streamId}"] = emptyGuide;
                 }
+
+                CacheShortGuide(streamId, emptyGuide);
 
                 Interlocked.Increment(ref shortGuideFailures);
             }
@@ -672,6 +751,38 @@ public sealed class XtreamClient
         return missing;
     }
 
+    private bool TryGetCachedShortGuide(int streamId, out GuideInfo guide)
+    {
+        lock (_guideLock)
+        {
+            if (!_shortGuideCacheByStreamId.TryGetValue(streamId, out var cached))
+            {
+                guide = new GuideInfo(null, null);
+                return false;
+            }
+
+            if (cached.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                _shortGuideCacheByStreamId.Remove(streamId);
+                guide = new GuideInfo(null, null);
+                return false;
+            }
+
+            guide = cached.Guide;
+            return true;
+        }
+    }
+
+    private void CacheShortGuide(int streamId, GuideInfo guide)
+    {
+        lock (_guideLock)
+        {
+            _shortGuideCacheByStreamId[streamId] = new CachedShortGuideEntry(
+                guide,
+                DateTimeOffset.UtcNow.AddMinutes(ShortGuideCacheMinutes));
+        }
+    }
+
     private static void LogGuidePerf(string scope, string message, params object?[] args)
     {
         var formatted = args.Length == 0 ? message : string.Format(message, args);
@@ -1020,6 +1131,8 @@ public sealed class XtreamClient
         string? NextStart = null,
         string? NextEnd = null,
         DateTimeOffset? NextStartSort = null);
+
+    private sealed record CachedShortGuideEntry(GuideInfo Guide, DateTimeOffset ExpiresAt);
 
     private static int? TryParseLiveStreamId(string id)
     {
