@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.IO;
+using System.Diagnostics;
 using System.Xml;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using M3UPlaylistPlayer.Models;
 using M3UPlaylistPlayer.Options;
@@ -11,6 +13,7 @@ namespace M3UPlaylistPlayer.Services;
 public sealed class XmlTvGuideService(
     IHttpClientFactory httpClientFactory,
     IMemoryCache memoryCache,
+    ILogger<XmlTvGuideService> logger,
     IOptions<PlaylistOptions> options) : IGuideService
 {
     public async Task<IReadOnlyDictionary<string, StreamGuide>> GetGuideAsync(
@@ -19,30 +22,77 @@ public sealed class XmlTvGuideService(
         bool refresh,
         CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+
         var normalizedIds = channelIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => id.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        logger.LogInformation(
+            "Guide request started. RequestedChannels={RequestedChannels}, DistinctChannels={DistinctChannels}, Refresh={Refresh}",
+            channelIds.Count,
+            normalizedIds.Length,
+            refresh);
+
         if (normalizedIds.Length == 0)
         {
+            totalStopwatch.Stop();
+            logger.LogInformation("Guide request ended with no channel ids. TotalMs={TotalMs}", totalStopwatch.ElapsedMilliseconds);
             return new Dictionary<string, StreamGuide>(StringComparer.OrdinalIgnoreCase);
         }
 
+        var urlStopwatch = Stopwatch.StartNew();
         var guideUrl = BuildGuideUrl(sourceUrl);
+        urlStopwatch.Stop();
+        logger.LogInformation("Guide URL built in {BuildUrlMs}ms. GuideUrl={GuideUrl}", urlStopwatch.ElapsedMilliseconds, guideUrl);
+
         var cacheKey = $"guide::{guideUrl}";
         if (!refresh &&
             memoryCache.TryGetValue(cacheKey, out IReadOnlyDictionary<string, StreamGuide>? cached) &&
             cached is not null)
         {
-            return FilterGuide(cached, normalizedIds);
+            var filterStopwatch = Stopwatch.StartNew();
+            var filteredFromCache = FilterGuide(cached, normalizedIds);
+            filterStopwatch.Stop();
+            totalStopwatch.Stop();
+
+            logger.LogInformation(
+                "Guide cache hit. CachedChannels={CachedChannels}, ReturnedChannels={ReturnedChannels}, FilterMs={FilterMs}, TotalMs={TotalMs}",
+                cached.Count,
+                filteredFromCache.Count,
+                filterStopwatch.ElapsedMilliseconds,
+                totalStopwatch.ElapsedMilliseconds);
+
+            return filteredFromCache;
         }
 
+        logger.LogInformation("Guide cache miss. Downloading XMLTV.");
         using var client = httpClientFactory.CreateClient(nameof(PlaylistService));
+
+        var fetchStopwatch = Stopwatch.StartNew();
         var content = await client.GetStringAsync(guideUrl, cancellationToken);
-        var guide = await ParseGuideAsync(SanitizeXmlTv(content), normalizedIds, cancellationToken);
+        fetchStopwatch.Stop();
+        logger.LogInformation("Guide download completed in {FetchMs}ms. PayloadChars={PayloadChars}", fetchStopwatch.ElapsedMilliseconds, content.Length);
+
+        var sanitizeStopwatch = Stopwatch.StartNew();
+        var sanitized = SanitizeXmlTv(content);
+        sanitizeStopwatch.Stop();
+        logger.LogInformation("Guide sanitization completed in {SanitizeMs}ms. SanitizedChars={SanitizedChars}", sanitizeStopwatch.ElapsedMilliseconds, sanitized.Length);
+
+        var parseStopwatch = Stopwatch.StartNew();
+        var guide = await ParseGuideAsync(sanitized, normalizedIds, cancellationToken);
+        parseStopwatch.Stop();
+
         memoryCache.Set(cacheKey, guide, TimeSpan.FromMinutes(Math.Max(1, options.Value.GuideCacheMinutes)));
+        totalStopwatch.Stop();
+
+        logger.LogInformation(
+            "Guide parse and cache completed. ParsedChannels={ParsedChannels}, ParseMs={ParseMs}, TotalMs={TotalMs}",
+            guide.Count,
+            parseStopwatch.ElapsedMilliseconds,
+            totalStopwatch.ElapsedMilliseconds);
 
         return guide;
     }
@@ -56,16 +106,21 @@ public sealed class XmlTvGuideService(
             .ToDictionary(id => id, id => guide[id], StringComparer.OrdinalIgnoreCase);
     }
 
-    private static async Task<IReadOnlyDictionary<string, StreamGuide>> ParseGuideAsync(
+    private async Task<IReadOnlyDictionary<string, StreamGuide>> ParseGuideAsync(
         string content,
         IReadOnlyCollection<string> channelIds,
         CancellationToken cancellationToken)
     {
+        var parseStopwatch = Stopwatch.StartNew();
         var wanted = channelIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var now = DateTimeOffset.Now;
         var latestStop = now.AddHours(-6);
         var horizon = now.AddHours(18);
         var results = new Dictionary<string, StreamGuide>(StringComparer.OrdinalIgnoreCase);
+        var programmeElementsSeen = 0;
+        var programmesForWantedChannels = 0;
+        var programmesInWindow = 0;
+        var programmesParsedWithTitle = 0;
 
         var settings = new XmlReaderSettings
         {
@@ -88,11 +143,15 @@ public sealed class XmlTvGuideService(
                 continue;
             }
 
+            programmeElementsSeen++;
+
             var channelId = reader.GetAttribute("channel");
             if (string.IsNullOrWhiteSpace(channelId) || !wanted.Contains(channelId))
             {
                 continue;
             }
+
+            programmesForWantedChannels++;
 
             var start = ParseXmlTvTime(reader.GetAttribute("start"));
             var stop = ParseXmlTvTime(reader.GetAttribute("stop"));
@@ -101,11 +160,15 @@ public sealed class XmlTvGuideService(
                 continue;
             }
 
+            programmesInWindow++;
+
             var programme = await ReadProgrammeAsync(reader, channelId, start.Value, stop.Value);
             if (programme is null)
             {
                 continue;
             }
+
+            programmesParsedWithTitle++;
 
             results.TryGetValue(channelId, out var existing);
             existing ??= new StreamGuide(null, null);
@@ -118,6 +181,17 @@ public sealed class XmlTvGuideService(
                 results[channelId] = existing with { Next = PickEarlier(existing?.Next, programme) };
             }
         }
+
+        parseStopwatch.Stop();
+        logger.LogInformation(
+            "Guide XML parsed. WantedChannels={WantedChannels}, ProgrammeElementsSeen={ProgrammeElementsSeen}, ProgrammesForWantedChannels={ProgrammesForWantedChannels}, ProgrammesInWindow={ProgrammesInWindow}, ProgrammesWithTitle={ProgrammesWithTitle}, ResultChannels={ResultChannels}, ParseLoopMs={ParseLoopMs}",
+            wanted.Count,
+            programmeElementsSeen,
+            programmesForWantedChannels,
+            programmesInWindow,
+            programmesParsedWithTitle,
+            results.Count,
+            parseStopwatch.ElapsedMilliseconds);
 
         return results;
     }
