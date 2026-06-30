@@ -1,61 +1,14 @@
 function getDefaultPlaybackMode() {
-  var requestedMode = getQueryValue('playback');
+  var userAgent = String(navigator.userAgent || '').toLowerCase();
+  var deviceInfo = String(window.PalmSystem && window.PalmSystem.deviceInfo || '').toLowerCase();
 
-  if (requestedMode === 'direct' || requestedMode === 'hls') {
-    return requestedMode;
-  }
-
-  return isEmulatorRuntime() ? 'hls' : 'direct';
-}
-
-function getQueryValue(name) {
-  var parts = String(window.location.search || '').replace(/^\?/, '').split('&');
-  var prefix = encodeURIComponent(name) + '=';
-  var index;
-  var part;
-
-  for (index = 0; index < parts.length; index += 1) {
-    part = parts[index];
-    if (part.indexOf(prefix) === 0) {
-      return decodeURIComponent(part.slice(prefix.length).replace(/\+/g, ' '));
-    }
-  }
-
-  return '';
-}
-
-function isEmulatorRuntime() {
-  var deviceInfo = getDeviceInfoText();
-  var runtimeText = [
-    navigator.userAgent,
-    navigator.platform,
-    navigator.vendor,
-    navigator.appVersion,
-    deviceInfo,
-    window.PalmSystem && window.PalmSystem.identifier,
-    window.PalmSystem && window.PalmSystem.platform
-  ].join(' ').toLowerCase();
-
-  return /\b(emulator|simulator|virtualbox|qemu|webosose)\b/.test(runtimeText) ||
-    /\b(x86|x86_64|i[3-6]86|amd64)\b/.test(runtimeText);
-}
-
-function getDeviceInfoText() {
-  var deviceInfo = window.PalmSystem && window.PalmSystem.deviceInfo;
-
-  if (!deviceInfo) {
-    return '';
-  }
-
-  if (typeof deviceInfo === 'string') {
-    return deviceInfo;
-  }
-
-  try {
-    return JSON.stringify(deviceInfo);
-  } catch (error) {
-    return String(deviceInfo);
-  }
+  return userAgent.indexOf('emulator') !== -1 ||
+    userAgent.indexOf('simulator') !== -1 ||
+    deviceInfo.indexOf('emulator') !== -1 ||
+    deviceInfo.indexOf('simulator') !== -1 ||
+    window.location.search.indexOf('playback=hls') !== -1
+    ? 'hls'
+    : 'direct';
 }
 
 function readJsonStorage(key, fallback) {
@@ -695,18 +648,6 @@ function applyRemoteKind(kind) {
   els.liveMode.classList.toggle('active', nextKind === 'live');
   els.moviesMode.classList.toggle('active', nextKind === 'movies');
   updateGuideTabs();
-}
-
-function applyPlaybackMode(playbackMode) {
-  var nextPlaybackMode = playbackMode === 'direct' ? 'direct' : 'hls';
-
-  if (state.playbackMode === nextPlaybackMode) {
-    return;
-  }
-
-  state.playbackMode = nextPlaybackMode;
-  updateGuideTabs();
-  renderMedia();
 }
 
 function updateGuideTabs() {
@@ -2049,7 +1990,6 @@ function pollRemoteCommands() {
 function handleRemoteCommand(command) {
   var type = command.type || command.Type;
   var kind = command.kind || command.Kind || state.kind;
-  var playbackMode = command.playbackMode || command.PlaybackMode || state.playbackMode;
   var item = normalizeRemoteItem(command.item || command.Item);
   var itemId = command.itemId || command.ItemId;
 
@@ -2064,7 +2004,6 @@ function handleRemoteCommand(command) {
   }
 
   applyRemoteKind(kind);
-  applyPlaybackMode(playbackMode);
   updateGuideTabs();
 
   if (item) {
