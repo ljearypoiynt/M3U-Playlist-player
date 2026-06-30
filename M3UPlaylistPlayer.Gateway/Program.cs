@@ -15,6 +15,17 @@ await host.RunAsync();
 
 static XtreamSettings LoadXtreamSettings(IConfiguration configuration)
 {
+    var playlistUrl = FirstNonEmpty(configuration["Xtream:PlaylistUrl"], configuration["Playlist:Url"]);
+    if (!string.IsNullOrWhiteSpace(playlistUrl) &&
+        XtreamSettings.TryFromPlaylistUrl(
+            playlistUrl,
+            FirstNonEmpty(configuration["Xtream:EpgUrl"], configuration["Playlist:EpgUrl"]),
+            out var settings,
+            out _))
+    {
+        return settings;
+    }
+
     return new XtreamSettings(
         FirstNonEmpty(configuration["Xtream:Host"], configuration["Playlist:Host"]),
         FirstNonEmpty(configuration["Xtream:Username"], configuration["Playlist:Username"], "unused"),

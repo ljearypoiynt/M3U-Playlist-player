@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Threading;
@@ -36,6 +37,9 @@ public sealed class XtreamClient
     private DateTimeOffset _xmltvGuideExpires = DateTimeOffset.MinValue;
     private DateTimeOffset _xmltvRetryAfter = DateTimeOffset.MinValue;
     private Task<IReadOnlyDictionary<string, GuideInfo>>? _xmltvGuideLoad;
+    private IReadOnlyList<MediaItem>? _m3uMediaCache;
+    private DateTimeOffset _m3uMediaExpires = DateTimeOffset.MinValue;
+    private Task<IReadOnlyList<MediaItem>>? _m3uMediaLoad;
 
     public XtreamClient(XtreamSettings settings)
     {
@@ -45,6 +49,13 @@ public sealed class XtreamClient
 
     public async Task<IReadOnlyList<MediaItem>> GetMediaAsync(MediaKind kind, CancellationToken cancellationToken)
     {
+        if (_settings.IsM3uPlaylist)
+        {
+            return kind == MediaKind.Live
+                ? await GetM3uMediaAsync(cancellationToken)
+                : [];
+        }
+
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
         var streamAction = kind == MediaKind.Live ? "get_live_streams" : "get_vod_streams";
 
@@ -61,6 +72,18 @@ public sealed class XtreamClient
 
     public async Task<IReadOnlyList<string>> GetCategoriesAsync(MediaKind kind, CancellationToken cancellationToken)
     {
+        if (_settings.IsM3uPlaylist)
+        {
+            return kind == MediaKind.Live
+                ? (await GetM3uMediaAsync(cancellationToken))
+                    .Select(item => item.Group)
+                    .Where(group => !string.IsNullOrWhiteSpace(group))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .ToArray()
+                : [];
+        }
+
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
         var categories = await GetJsonAsync<List<XtreamCategory>>(BuildApiUrl(categoryAction), cancellationToken) ?? [];
 
@@ -84,6 +107,13 @@ public sealed class XtreamClient
         int limit,
         CancellationToken cancellationToken)
     {
+        if (_settings.IsM3uPlaylist)
+        {
+            return kind == MediaKind.Live
+                ? await GetM3uPageAsync(query, group, region, excludedGroups, selectedGroups, skip, limit, cancellationToken)
+                : new MediaPage([], 0, HasMore: false);
+        }
+
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
         var categories = await GetJsonAsync<List<XtreamCategory>>(BuildApiUrl(categoryAction), cancellationToken) ?? [];
         var categoryNames = categories
@@ -109,6 +139,15 @@ public sealed class XtreamClient
         bool includeShortGuide,
         CancellationToken cancellationToken)
     {
+        if (_settings.IsM3uPlaylist)
+        {
+            return ids
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxGuideIdsPerRequest)
+                .ToDictionary(id => id, _ => new GuideInfo(null, null), StringComparer.OrdinalIgnoreCase);
+        }
+
         var totalStopwatch = Stopwatch.StartNew();
         var requestId = Guid.NewGuid().ToString("N")[..8];
         var source = includeMainGuide
@@ -360,6 +399,11 @@ public sealed class XtreamClient
 
     public async Task WarmGuideCacheAsync(CancellationToken cancellationToken)
     {
+        if (_settings.IsM3uPlaylist)
+        {
+            return;
+        }
+
         try
         {
             await GetXmltvGuideAsync(cancellationToken);
@@ -396,6 +440,203 @@ public sealed class XtreamClient
             .OrderBy(item => item.Group)
             .ThenBy(item => item.Name)
             .ToArray();
+    }
+
+    private async Task<MediaPage> GetM3uPageAsync(
+        string? query,
+        string? group,
+        string? region,
+        IReadOnlyCollection<string>? excludedGroups,
+        IReadOnlyCollection<string>? selectedGroups,
+        int skip,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var queryRegex = BuildSearchRegex(query);
+        var excludedSet = ToExcludedGroupSet(excludedGroups);
+        var selectedSet = ToGroupSet(selectedGroups);
+        var filtered = (await GetM3uMediaAsync(cancellationToken))
+            .Where(item => Matches(item, queryRegex, group, region, excludedSet, selectedSet))
+            .ToArray();
+        var pageItems = filtered
+            .Skip(skip)
+            .Take(limit)
+            .ToArray();
+
+        return new MediaPage(pageItems, filtered.Length, skip + pageItems.Length < filtered.Length);
+    }
+
+    private async Task<IReadOnlyList<MediaItem>> GetM3uMediaAsync(CancellationToken cancellationToken)
+    {
+        Task<IReadOnlyList<MediaItem>> loadTask;
+        lock (_guideLock)
+        {
+            if (_m3uMediaCache is not null && _m3uMediaExpires > DateTimeOffset.UtcNow)
+            {
+                return _m3uMediaCache;
+            }
+
+            _m3uMediaLoad ??= LoadM3uMediaAsync(cancellationToken);
+            loadTask = _m3uMediaLoad;
+        }
+
+        try
+        {
+            var items = await loadTask;
+            lock (_guideLock)
+            {
+                _m3uMediaCache = items;
+                _m3uMediaExpires = DateTimeOffset.UtcNow.AddMinutes(15);
+                if (ReferenceEquals(_m3uMediaLoad, loadTask))
+                {
+                    _m3uMediaLoad = null;
+                }
+            }
+
+            return items;
+        }
+        catch
+        {
+            lock (_guideLock)
+            {
+                if (ReferenceEquals(_m3uMediaLoad, loadTask))
+                {
+                    _m3uMediaLoad = null;
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<IReadOnlyList<MediaItem>> LoadM3uMediaAsync(CancellationToken cancellationToken)
+    {
+        var playlistUrl = _settings.PlaylistUrl;
+        if (string.IsNullOrWhiteSpace(playlistUrl))
+        {
+            return [];
+        }
+
+        var content = await _httpClient.GetStringAsync(playlistUrl, cancellationToken);
+        var baseUri = Uri.TryCreate(playlistUrl, UriKind.Absolute, out var parsedBaseUri)
+            ? parsedBaseUri
+            : null;
+        var items = new List<MediaItem>();
+        string? pendingExtInf = null;
+
+        foreach (var rawLine in content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = rawLine.Trim();
+            if (line.StartsWith("#EXTINF:", StringComparison.OrdinalIgnoreCase))
+            {
+                pendingExtInf = line;
+                continue;
+            }
+
+            if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (pendingExtInf is null)
+            {
+                continue;
+            }
+
+            var item = CreateM3uMediaItem(pendingExtInf, line, baseUri);
+            pendingExtInf = null;
+            if (item is not null)
+            {
+                items.Add(item);
+            }
+        }
+
+        return items
+            .OrderBy(item => item.Group)
+            .ThenBy(item => item.Name)
+            .ToArray();
+    }
+
+    private static MediaItem? CreateM3uMediaItem(string extInf, string rawUrl, Uri? baseUri)
+    {
+        var url = ResolveM3uUrl(rawUrl, baseUri);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var attributes = ReadM3uAttributes(extInf);
+        var commaIndex = extInf.LastIndexOf(',');
+        var fallbackName = commaIndex >= 0 && commaIndex + 1 < extInf.Length
+            ? extInf[(commaIndex + 1)..].Trim()
+            : string.Empty;
+        var name = FirstNonEmpty(
+            GetM3uAttribute(attributes, "tvg-name"),
+            fallbackName,
+            Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath),
+            "Untitled channel");
+        var group = FirstNonEmpty(
+            GetM3uAttribute(attributes, "group-title"),
+            GetM3uAttribute(attributes, "tvg-country"),
+            "Ungrouped");
+        var icon = GetM3uAttribute(attributes, "tvg-logo");
+        var epgId = GetM3uAttribute(attributes, "tvg-id");
+
+        return new MediaItem(
+            $"live-m3u-{StableId(url)}",
+            MediaKind.Live,
+            name,
+            group,
+            url,
+            icon,
+            epgId);
+    }
+
+    private static string? ResolveM3uUrl(string rawUrl, Uri? baseUri)
+    {
+        if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var absoluteUri))
+        {
+            return absoluteUri.ToString();
+        }
+
+        if (baseUri is not null && Uri.TryCreate(baseUri, rawUrl, out var relativeUri))
+        {
+            return relativeUri.ToString();
+        }
+
+        return null;
+    }
+
+    private static Dictionary<string, string> ReadM3uAttributes(string extInf)
+    {
+        var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match match in Regex.Matches(
+                     extInf,
+                     "(?<key>[A-Za-z0-9_-]+)\\s*=\\s*\"(?<value>[^\"]*)\"",
+                     RegexOptions.Singleline))
+        {
+            attributes[match.Groups["key"].Value] = WebUtility.HtmlDecode(match.Groups["value"].Value).Trim();
+        }
+
+        return attributes;
+    }
+
+    private static string? GetM3uAttribute(IReadOnlyDictionary<string, string> attributes, string key)
+    {
+        return attributes.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
+    }
+
+    private static string StableId(string value)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToLowerInvariant())))[..12].ToLowerInvariant();
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
     }
 
     private async Task<MediaPage> GetLivePageAsync(

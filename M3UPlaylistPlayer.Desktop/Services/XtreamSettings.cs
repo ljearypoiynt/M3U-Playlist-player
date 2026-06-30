@@ -1,6 +1,12 @@
 namespace M3UPlaylistPlayer.Desktop.Services;
 
-public sealed record XtreamSettings(string Host, string Username, string Password, string? EpgUrl = null)
+public sealed record XtreamSettings(
+    string Host,
+    string Username,
+    string Password,
+    string? EpgUrl = null,
+    string? PlaylistUrl = null,
+    bool IsM3uPlaylist = false)
 {
     public string Origin
     {
@@ -41,15 +47,6 @@ public sealed record XtreamSettings(string Host, string Username, string Passwor
             return false;
         }
 
-        var query = ParseQuery(uri.Query);
-        query.TryGetValue("username", out var username);
-        query.TryGetValue("password", out var password);
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
-        {
-            error = "Playlist URL must include username and password query parameters.";
-            return false;
-        }
-
         string? safeEpgUrl = null;
         if (!string.IsNullOrWhiteSpace(epgUrl))
         {
@@ -62,7 +59,22 @@ public sealed record XtreamSettings(string Host, string Username, string Passwor
             safeEpgUrl = epgUrl.Trim();
         }
 
-        settings = new XtreamSettings(uri.GetLeftPart(UriPartial.Authority), username, password, safeEpgUrl);
+        var query = ParseQuery(uri.Query);
+        query.TryGetValue("username", out var username);
+        query.TryGetValue("password", out var password);
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            settings = new XtreamSettings(
+                uri.GetLeftPart(UriPartial.Authority),
+                string.Empty,
+                string.Empty,
+                safeEpgUrl,
+                playlistUrl.Trim(),
+                IsM3uPlaylist: true);
+            return true;
+        }
+
+        settings = new XtreamSettings(uri.GetLeftPart(UriPartial.Authority), username, password, safeEpgUrl, playlistUrl.Trim());
         return true;
     }
 
