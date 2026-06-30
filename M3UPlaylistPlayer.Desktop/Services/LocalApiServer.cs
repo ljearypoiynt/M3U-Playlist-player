@@ -1453,7 +1453,45 @@ public sealed class LocalApiServer
 
     private static string BuildRequestUrl(HttpContext context, string path)
     {
-        return $"{context.Request.Scheme}://{context.Request.Host}{path}";
+        var scheme = GetForwardedHeader(context, "X-Forwarded-Proto") ??
+                     GetCloudflareVisitorScheme(context) ??
+                     context.Request.Scheme;
+        var host = GetForwardedHeader(context, "X-Forwarded-Host") ??
+                   context.Request.Host.Value;
+        var safePath = path.StartsWith("/", StringComparison.Ordinal) ? path : "/" + path;
+
+        return $"{NormalizeScheme(scheme)}://{host}{safePath}";
+    }
+
+    private static string NormalizeScheme(string? scheme)
+    {
+        return string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase)
+            ? "https"
+            : "http";
+    }
+
+    private static string? GetForwardedHeader(HttpContext context, string headerName)
+    {
+        var value = context.Request.Headers[headerName].ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var firstValue = value.Split(',')[0].Trim();
+        return string.IsNullOrWhiteSpace(firstValue) ? null : firstValue;
+    }
+
+    private static string? GetCloudflareVisitorScheme(HttpContext context)
+    {
+        var value = context.Request.Headers["Cf-Visitor"].ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(value, "\"scheme\"\\s*:\\s*\"(?<scheme>https?)\"", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["scheme"].Value : null;
     }
 
     private static string RedactSensitiveText(string value)

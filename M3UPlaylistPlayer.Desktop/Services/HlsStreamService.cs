@@ -36,12 +36,24 @@ public sealed class HlsStreamService : IDisposable
         Directory.CreateDirectory(directory);
 
         var playlistPath = Path.Combine(directory, "index.m3u8");
-        var process = StartFfmpeg(item.Url, directory, playlistPath);
-        var session = new HlsSession(sessionId, directory, playlistPath, process);
+        var ffmpeg = StartFfmpeg(item.Url, directory, playlistPath);
+        var session = new HlsSession(sessionId, directory, playlistPath, ffmpeg.Process, ffmpeg.ErrorLines);
         _sessions[sessionId] = session;
 
-        await WaitForPlaylistAsync(session, cancellationToken);
-        return session;
+        var stopwatch = Stopwatch.StartNew();
+        Console.WriteLine($"[HLS:{sessionId}] Starting FFmpeg. Item=\"{TruncateForLog(item.Name, 80)}\" Source={DescribeUrl(item.Url)}");
+        try
+        {
+            await WaitForPlaylistAsync(session, cancellationToken);
+            Console.WriteLine($"[HLS:{sessionId}] Playlist ready in {stopwatch.ElapsedMilliseconds}ms.");
+            return session;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.WriteLine($"[HLS:{sessionId}] Playlist failed after {stopwatch.ElapsedMilliseconds}ms. {ex.GetType().Name}: {ex.Message}");
+            Stop(sessionId);
+            throw;
+        }
     }
 
     public bool TryGetFile(string sessionId, string fileName, out string path, out string contentType)
@@ -106,28 +118,24 @@ public sealed class HlsStreamService : IDisposable
         }
     }
 
-    private static Process StartFfmpeg(string inputUrl, string directory, string playlistPath)
+    private static FfmpegProcess StartFfmpeg(string inputUrl, string directory, string playlistPath)
     {
         var segmentPath = Path.Combine(directory, "segment_%05d.ts");
         var arguments = string.Join(" ", [
             "-hide_banner",
             "-loglevel warning",
+            "-nostdin",
             "-reconnect 1",
             "-reconnect_streamed 1",
             "-reconnect_delay_max 2",
             "-i", Quote(inputUrl),
-            "-c:v libx264",
-            "-preset veryfast",
-            "-tune zerolatency",
-            "-profile:v main",
-            "-pix_fmt yuv420p",
-            "-c:a aac",
-            "-b:a 128k",
-            "-ac 2",
+            "-map 0:v:0?",
+            "-map 0:a:0?",
+            "-c copy",
             "-f hls",
             "-hls_time 3",
             "-hls_list_size 8",
-            "-hls_flags delete_segments+append_list+omit_endlist",
+            "-hls_flags delete_segments+omit_endlist",
             "-hls_segment_filename", Quote(segmentPath),
             Quote(playlistPath)
         ]);
@@ -138,27 +146,52 @@ public sealed class HlsStreamService : IDisposable
             Arguments = arguments,
             CreateNoWindow = true,
             RedirectStandardError = true,
-            RedirectStandardOutput = true,
+            RedirectStandardOutput = false,
             UseShellExecute = false
         };
 
-        return Process.Start(startInfo) ?? throw new InvalidOperationException("FFmpeg could not be started.");
+        var errorLines = new ConcurrentQueue<string>();
+        var process = new Process
+        {
+            StartInfo = startInfo
+        };
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (string.IsNullOrWhiteSpace(args.Data))
+            {
+                return;
+            }
+
+            errorLines.Enqueue(args.Data);
+            while (errorLines.Count > 20 && errorLines.TryDequeue(out string? _))
+            {
+            }
+        };
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("FFmpeg could not be started.");
+        }
+
+        process.BeginErrorReadLine();
+        return new FfmpegProcess(process, errorLines);
     }
 
     private static async Task WaitForPlaylistAsync(HlsSession session, CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.Now.AddSeconds(20);
+        var deadline = DateTimeOffset.Now.AddSeconds(30);
         while (DateTimeOffset.Now < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (session.Process.HasExited)
             {
-                var error = await session.Process.StandardError.ReadToEndAsync(cancellationToken);
-                throw new InvalidOperationException($"FFmpeg stopped before creating playback. {error}".Trim());
+                throw new InvalidOperationException($"FFmpeg stopped before creating playback. {GetRecentError(session)}".Trim());
             }
 
-            if (File.Exists(session.PlaylistPath) && new FileInfo(session.PlaylistPath).Length > 0)
+            if (File.Exists(session.PlaylistPath) &&
+                new FileInfo(session.PlaylistPath).Length > 0 &&
+                HasPlayableSegment(session.Directory))
             {
                 return;
             }
@@ -166,7 +199,21 @@ public sealed class HlsStreamService : IDisposable
             await Task.Delay(250, cancellationToken);
         }
 
-        throw new TimeoutException("Timed out while preparing TV playback.");
+        throw new TimeoutException($"Timed out while preparing TV playback. {GetRecentError(session)}".Trim());
+    }
+
+    private static bool HasPlayableSegment(string directory)
+    {
+        return Directory.EnumerateFiles(directory, "segment_*.ts")
+            .Any(path => new FileInfo(path).Length > 0);
+    }
+
+    private static string GetRecentError(HlsSession session)
+    {
+        var error = string.Join(" ", session.ErrorLines.ToArray().TakeLast(6));
+        return string.IsNullOrWhiteSpace(error)
+            ? "FFmpeg did not report any error output."
+            : RedactSensitiveText(error);
     }
 
     private static string SanitizeSessionId(string value)
@@ -181,6 +228,38 @@ public sealed class HlsStreamService : IDisposable
     {
         return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
     }
+
+    private static string DescribeUrl(string value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            ? $"{uri.Scheme}://{uri.Host}"
+            : "unknown";
+    }
+
+    private static string TruncateForLog(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Untitled";
+        }
+
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
+    private static string RedactSensitiveText(string value)
+    {
+        var redacted = value;
+        redacted = System.Text.RegularExpressions.Regex.Replace(redacted, "([?&](?:username|password)=)[^&\\s]+", "$1redacted", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        redacted = System.Text.RegularExpressions.Regex.Replace(redacted, "(/(?:live|movie)/)[^/\\s]+/[^/\\s]+/", "$1redacted/redacted/", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return redacted;
+    }
+
+    private sealed record FfmpegProcess(Process Process, ConcurrentQueue<string> ErrorLines);
 }
 
-public sealed record HlsSession(string Id, string Directory, string PlaylistPath, Process Process);
+public sealed record HlsSession(
+    string Id,
+    string Directory,
+    string PlaylistPath,
+    Process Process,
+    ConcurrentQueue<string> ErrorLines);
