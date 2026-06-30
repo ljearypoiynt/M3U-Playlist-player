@@ -240,11 +240,27 @@ public sealed class LocalApiServer
 
             var client = new XtreamClient(settings);
             var kind = ParseKind(request.Kind);
-            var categories = await client.GetCategoriesAsync(kind, token);
+            IReadOnlyList<string> categories;
+            var upstreamUnavailable = false;
+            try
+            {
+                categories = await client.GetCategoriesAsync(kind, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                upstreamUnavailable = true;
+                categories = [];
+                LogUpstreamFailure("setup-category-preview", ex);
+            }
 
             return Results.Json(new
             {
                 kind = kind.ToString().ToLowerInvariant(),
+                upstreamUnavailable,
                 count = categories.Count,
                 categories
             });
@@ -524,13 +540,29 @@ public sealed class LocalApiServer
                 : region;
             var excludedGroups = ReadExcludedGroups(context, session, mediaKind);
             var selectedGroups = session.GetSelectedCategories(mediaKind);
-            var page = await GetSessionMediaPageAsync(session, mediaKind, query, group, safeRegion, list, excludedGroups, selectedGroups, safeSkip, safeLimit, token);
+            var upstreamUnavailable = false;
+            XtreamClient.MediaPage page;
+            try
+            {
+                page = await GetSessionMediaPageAsync(session, mediaKind, query, group, safeRegion, list, excludedGroups, selectedGroups, safeSkip, safeLimit, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                upstreamUnavailable = true;
+                page = EmptyMediaPage();
+                LogUpstreamFailure("session-media", ex);
+            }
             session.RememberCount(mediaKind, Math.Max(page.MatchedCount, safeSkip + page.Items.Count));
 
             return Results.Json(new
             {
                 sessionId = session.Id,
                 kind = mediaKind.ToString().ToLowerInvariant(),
+                upstreamUnavailable,
                 count = page.MatchedCount,
                 hasMore = page.HasMore,
                 skip = safeSkip,
@@ -547,31 +579,47 @@ public sealed class LocalApiServer
             }
 
             var mediaKind = ParseKind(kind);
-            var categories = await session.Client.GetCategoriesAsync(mediaKind, token);
-            if (keptOnly == true)
+            IReadOnlyList<string> categories;
+            var upstreamUnavailable = false;
+            try
             {
-                var selected = ToGroupSet(session.GetSelectedCategories(mediaKind));
-                if (selected is not null)
+                categories = await session.Client.GetCategoriesAsync(mediaKind, token);
+                if (keptOnly == true)
                 {
-                    categories = categories
-                        .Where(category => selected.Contains(NormalizeGroup(category)))
-                        .ToArray();
-                }
-                else
-                {
-                    var excluded = ToGroupSet(session.GetExcludedCategories(mediaKind));
-                    categories = excluded is null
-                        ? categories
-                        : categories
-                            .Where(category => !excluded.Contains(NormalizeGroup(category)))
+                    var selected = ToGroupSet(session.GetSelectedCategories(mediaKind));
+                    if (selected is not null)
+                    {
+                        categories = categories
+                            .Where(category => selected.Contains(NormalizeGroup(category)))
                             .ToArray();
+                    }
+                    else
+                    {
+                        var excluded = ToGroupSet(session.GetExcludedCategories(mediaKind));
+                        categories = excluded is null
+                            ? categories
+                            : categories
+                                .Where(category => !excluded.Contains(NormalizeGroup(category)))
+                                .ToArray();
+                    }
                 }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                upstreamUnavailable = true;
+                categories = [];
+                LogUpstreamFailure("session-categories", ex);
             }
 
             return Results.Json(new
             {
                 sessionId = session.Id,
                 kind = mediaKind.ToString().ToLowerInvariant(),
+                upstreamUnavailable,
                 count = categories.Count,
                 categories
             });
@@ -629,7 +677,20 @@ public sealed class LocalApiServer
             }
 
             var mediaKind = ParseKind(kind);
-            var items = await session.Client.GetMediaAsync(mediaKind, token);
+            IReadOnlyList<MediaItem> items;
+            try
+            {
+                items = await session.Client.GetMediaAsync(mediaKind, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogUpstreamFailure("session-item", ex);
+                items = [];
+            }
             var item = items.FirstOrDefault(candidate => string.Equals(candidate.Id, id, StringComparison.OrdinalIgnoreCase));
             return item is null ? Results.NotFound() : Results.Json(item);
         });
@@ -771,11 +832,27 @@ public sealed class LocalApiServer
             var safeSkip = Math.Max(0, skip ?? 0);
             var safeLimit = Math.Clamp(limit ?? 240, 1, 1000);
             var excludedGroups = ReadExcludedGroups(context);
-            var page = await _client.GetMediaPageAsync(mediaKind, query, group, region, excludedGroups, null, safeSkip, safeLimit, token);
+            var upstreamUnavailable = false;
+            XtreamClient.MediaPage page;
+            try
+            {
+                page = await _client.GetMediaPageAsync(mediaKind, query, group, region, excludedGroups, null, safeSkip, safeLimit, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                upstreamUnavailable = true;
+                page = EmptyMediaPage();
+                LogUpstreamFailure("media", ex);
+            }
 
             return Results.Json(new
             {
                 kind = mediaKind.ToString().ToLowerInvariant(),
+                upstreamUnavailable,
                 count = page.MatchedCount,
                 hasMore = page.HasMore,
                 skip = safeSkip,
@@ -787,11 +864,27 @@ public sealed class LocalApiServer
         _app.MapGet("/api/categories", async (string? kind, CancellationToken token) =>
         {
             var mediaKind = ParseKind(kind);
-            var categories = await _client.GetCategoriesAsync(mediaKind, token);
+            IReadOnlyList<string> categories;
+            var upstreamUnavailable = false;
+            try
+            {
+                categories = await _client.GetCategoriesAsync(mediaKind, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                upstreamUnavailable = true;
+                categories = [];
+                LogUpstreamFailure("categories", ex);
+            }
 
             return Results.Json(new
             {
                 kind = mediaKind.ToString().ToLowerInvariant(),
+                upstreamUnavailable,
                 count = categories.Count,
                 categories
             });
@@ -838,7 +931,21 @@ public sealed class LocalApiServer
         _app.MapGet("/api/item/{id}", async (string id, string? kind, CancellationToken token) =>
         {
             var mediaKind = ParseKind(kind);
-            var items = await GetMediaAsync(mediaKind, token);
+            IReadOnlyList<MediaItem> items;
+            try
+            {
+                items = await GetMediaAsync(mediaKind, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogUpstreamFailure("item", ex);
+                items = [];
+            }
+
             var item = items.FirstOrDefault(candidate => string.Equals(candidate.Id, id, StringComparison.OrdinalIgnoreCase));
             return item is null ? Results.NotFound() : Results.Json(item);
         });
@@ -1175,20 +1282,42 @@ public sealed class LocalApiServer
             StringComparer.OrdinalIgnoreCase);
     }
 
+    private static XtreamClient.MediaPage EmptyMediaPage()
+    {
+        return new XtreamClient.MediaPage([], 0, HasMore: false);
+    }
+
+    private static void LogUpstreamFailure(string scope, Exception ex)
+    {
+        var message = SanitizeLogMessage(ex.Message);
+        Console.WriteLine(
+            "{0:O} [Upstream:{1}] Response degraded. ErrorType={2}, Message={3}",
+            DateTimeOffset.UtcNow,
+            scope,
+            ex.GetType().Name,
+            message);
+    }
+
     private static void LogGuideEndpointFailure(string source, Exception ex)
     {
-        var message = Regex.Replace(ex.Message ?? string.Empty, "\\s+", " ").Trim();
-        if (message.Length > 260)
-        {
-            message = message[..260] + "...";
-        }
-
+        var message = SanitizeLogMessage(ex.Message);
         Console.WriteLine(
             "{0:O} [GuideEndpoint] Guide response degraded. Source={1}, ErrorType={2}, Message={3}",
             DateTimeOffset.UtcNow,
             source,
             ex.GetType().Name,
-            string.IsNullOrWhiteSpace(message) ? "<empty>" : message);
+            message);
+    }
+
+    private static string SanitizeLogMessage(string? value)
+    {
+        var message = Regex.Replace(value ?? string.Empty, "\\s+", " ").Trim();
+        if (message.Length > 260)
+        {
+            message = message[..260] + "...";
+        }
+
+        return string.IsNullOrWhiteSpace(message) ? "<empty>" : message;
     }
 
     private static bool IsMissingGuide(XtreamClient.GuideInfo? guide)

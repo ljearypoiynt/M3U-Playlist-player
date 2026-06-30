@@ -16,7 +16,7 @@ await host.RunAsync();
 static XtreamSettings LoadXtreamSettings(IConfiguration configuration)
 {
     return new XtreamSettings(
-        FirstNonEmpty(configuration["Xtream:Host"], configuration["Playlist:Host"], "http://localhost"),
+        FirstNonEmpty(configuration["Xtream:Host"], configuration["Playlist:Host"]),
         FirstNonEmpty(configuration["Xtream:Username"], configuration["Playlist:Username"], "unused"),
         FirstNonEmpty(configuration["Xtream:Password"], configuration["Playlist:Password"], "unused"),
         FirstNonEmpty(configuration["Xtream:EpgUrl"], configuration["Playlist:EpgUrl"]));
