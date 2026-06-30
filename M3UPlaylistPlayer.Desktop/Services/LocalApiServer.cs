@@ -590,13 +590,31 @@ public sealed class LocalApiServer
                 .Take(300)
                 .ToArray();
             var guideSource = ParseGuideSource(source);
-            var guide = await session.Client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
-            var missingIds = GetMissingGuideIds(guide);
+            IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide;
+            string[] missingIds;
+            var guideUnavailable = false;
+            try
+            {
+                guide = await session.Client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+                missingIds = GetMissingGuideIds(guide);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                guideUnavailable = true;
+                guide = CreateEmptyGuide(requestedIds);
+                missingIds = requestedIds;
+                LogGuideEndpointFailure(guideSource.Name, ex);
+            }
 
             return Results.Json(new
             {
                 sessionId = session.Id,
                 source = guideSource.Name,
+                guideUnavailable,
                 count = guide.Count,
                 missingIds,
                 guide
@@ -787,12 +805,30 @@ public sealed class LocalApiServer
                 .Take(300)
                 .ToArray();
             var guideSource = ParseGuideSource(source);
-            var guide = await _client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
-            var missingIds = GetMissingGuideIds(guide);
+            IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide;
+            string[] missingIds;
+            var guideUnavailable = false;
+            try
+            {
+                guide = await _client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+                missingIds = GetMissingGuideIds(guide);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                guideUnavailable = true;
+                guide = CreateEmptyGuide(requestedIds);
+                missingIds = requestedIds;
+                LogGuideEndpointFailure(guideSource.Name, ex);
+            }
 
             return Results.Json(new
             {
                 source = guideSource.Name,
+                guideUnavailable,
                 count = guide.Count,
                 missingIds,
                 guide
@@ -1129,6 +1165,30 @@ public sealed class LocalApiServer
             .Where(pair => IsMissingGuide(pair.Value))
             .Select(pair => pair.Key)
             .ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, XtreamClient.GuideInfo> CreateEmptyGuide(IReadOnlyCollection<string> ids)
+    {
+        return ids.ToDictionary(
+            id => id,
+            _ => new XtreamClient.GuideInfo(null, null),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void LogGuideEndpointFailure(string source, Exception ex)
+    {
+        var message = Regex.Replace(ex.Message ?? string.Empty, "\\s+", " ").Trim();
+        if (message.Length > 260)
+        {
+            message = message[..260] + "...";
+        }
+
+        Console.WriteLine(
+            "{0:O} [GuideEndpoint] Guide response degraded. Source={1}, ErrorType={2}, Message={3}",
+            DateTimeOffset.UtcNow,
+            source,
+            ex.GetType().Name,
+            string.IsNullOrWhiteSpace(message) ? "<empty>" : message);
     }
 
     private static bool IsMissingGuide(XtreamClient.GuideInfo? guide)
