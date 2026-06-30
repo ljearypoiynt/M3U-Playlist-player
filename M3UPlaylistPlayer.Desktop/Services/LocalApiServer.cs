@@ -743,9 +743,7 @@ public sealed class LocalApiServer
                 return Results.NotFound();
             }
 
-            return session.HlsStreamService.TryGetFile(hlsSessionId, fileName, out var path, out var contentType)
-                ? Results.File(path, contentType, enableRangeProcessing: true)
-                : Results.NotFound();
+            return ServeHlsFile(session.HlsStreamService, hlsSessionId, fileName);
         });
 
         _app.MapPost("/api/sessions/{sessionId}/stop", (string sessionId) =>
@@ -988,9 +986,7 @@ public sealed class LocalApiServer
 
         _app.MapGet("/api/hls/{sessionId}/{fileName}", (string sessionId, string fileName) =>
         {
-            return _hlsStreamService.TryGetFile(sessionId, fileName, out var path, out var contentType)
-                ? Results.File(path, contentType, enableRangeProcessing: true)
-                : Results.NotFound();
+            return ServeHlsFile(_hlsStreamService, sessionId, fileName);
         });
 
         _app.MapGet("/api/stop/{sessionId}", (string sessionId) =>
@@ -1367,6 +1363,27 @@ public sealed class LocalApiServer
         return File.Exists(path)
             ? Results.File(path, contentType)
             : Results.NotFound();
+    }
+
+    private static IResult ServeHlsFile(HlsStreamService hlsStreamService, string sessionId, string fileName)
+    {
+        if (!hlsStreamService.TryGetFile(sessionId, fileName, out var path, out var contentType))
+        {
+            return Results.NotFound();
+        }
+
+        try
+        {
+            return Results.Bytes(File.ReadAllBytes(path), contentType);
+        }
+        catch (IOException)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
     }
 
     private void LoadPersistedCuratedLists(PlaybackSession session)
