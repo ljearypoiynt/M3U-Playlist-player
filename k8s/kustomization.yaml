@@ -17,4 +17,4 @@ commonAnnotations:
 images:
   - name: m3u-gateway
     newName: ghcr.io/ljearypoiynt/m3u-playlist-player/gateway
-    newTag: master-6679e68
+    newTag: master-a06f185
