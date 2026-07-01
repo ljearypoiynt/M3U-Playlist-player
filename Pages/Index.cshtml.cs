@@ -39,6 +39,7 @@ public class IndexModel(
     public PlaylistEntry? SelectedStream { get; private set; }
     public DateTimeOffset? DownloadedAt { get; private set; }
     public string SourceKind { get; private set; } = "M3U";
+    public string? GuideUrl { get; private set; }
     public string? StatusMessage { get; private set; }
     public string? ErrorMessage { get; private set; }
     public string? GuideMessage { get; private set; }
@@ -58,6 +59,7 @@ public class IndexModel(
                 {
                     Guide = await guideService.GetGuideAsync(
                         SourceUrl,
+                        playlist.GuideUrl,
                         Streams.Select(stream => stream.TvgId ?? string.Empty).ToArray(),
                         refresh,
                         cancellationToken);
@@ -119,6 +121,7 @@ public class IndexModel(
     {
         DownloadedAt = playlist.DownloadedAt;
         SourceKind = playlist.SourceKind;
+        GuideUrl = playlist.GuideUrl;
         StatusMessage = TempData["StatusMessage"] as string;
         ErrorMessage = TempData["ErrorMessage"] as string;
         Groups = playlist.Entries

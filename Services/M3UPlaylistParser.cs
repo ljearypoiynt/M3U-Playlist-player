@@ -9,15 +9,27 @@ public sealed partial class M3UPlaylistParser
 {
     public IReadOnlyList<PlaylistEntry> Parse(string content)
     {
+        return ParseWithMetadata(content).Entries;
+    }
+
+    public M3UPlaylistParseResult ParseWithMetadata(string content)
+    {
         var entries = new List<PlaylistEntry>();
         var lines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
         ExtInf? pending = null;
+        string? guideUrl = null;
 
         foreach (var rawLine in lines)
         {
             var line = rawLine.Trim();
             if (string.IsNullOrWhiteSpace(line))
             {
+                continue;
+            }
+
+            if (line.StartsWith("#EXTM3U", StringComparison.OrdinalIgnoreCase))
+            {
+                guideUrl ??= ParseGuideUrl(line);
                 continue;
             }
 
@@ -60,7 +72,7 @@ public sealed partial class M3UPlaylistParser
             pending = null;
         }
 
-        return entries;
+        return new M3UPlaylistParseResult(entries, guideUrl);
     }
 
     private static ExtInf ParseExtInf(string line)
@@ -82,6 +94,33 @@ public sealed partial class M3UPlaylistParser
             string.IsNullOrWhiteSpace(tvgId) ? null : tvgId.Trim(),
             string.IsNullOrWhiteSpace(tvgLogo) ? null : tvgLogo.Trim(),
             string.IsNullOrWhiteSpace(groupTitle) ? string.Empty : groupTitle.Trim());
+    }
+
+    private static string? ParseGuideUrl(string line)
+    {
+        var attributes = AttributeRegex()
+            .Matches(line)
+            .ToDictionary(match => match.Groups[1].Value, match => match.Groups[2].Value, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in new[] { "x-tvg-url", "tvg-url", "url-tvg" })
+        {
+            if (!attributes.TryGetValue(key, out var value))
+            {
+                continue;
+            }
+
+            var firstUrl = value
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault();
+
+            if (Uri.TryCreate(firstUrl, UriKind.Absolute, out var uri) &&
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+            {
+                return uri.ToString();
+            }
+        }
+
+        return null;
     }
 
     public static string? DetectCountry(string name, string group)

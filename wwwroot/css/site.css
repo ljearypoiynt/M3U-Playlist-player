@@ -181,6 +181,16 @@ a:focus {
   margin: 4px 0 0;
 }
 
+.guide-source {
+  display: inline-block;
+  margin-left: 8px;
+}
+
+.guide-source a {
+  color: #0c5d47;
+  font-weight: 700;
+}
+
 .guide-lines {
   border-left: 3px solid #b8dfd0;
   display: grid;

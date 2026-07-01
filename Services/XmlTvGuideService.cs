@@ -1,7 +1,9 @@
 using System.Globalization;
+using System.IO.Compression;
 using System.IO;
 using System.Diagnostics;
 using System.Xml;
+using System.Net.Http.Headers;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,6 +20,7 @@ public sealed class XmlTvGuideService(
 {
     public async Task<IReadOnlyDictionary<string, StreamGuide>> GetGuideAsync(
         string sourceUrl,
+        string? playlistGuideUrl,
         IReadOnlyCollection<string> channelIds,
         bool refresh,
         CancellationToken cancellationToken)
@@ -44,7 +47,7 @@ public sealed class XmlTvGuideService(
         }
 
         var urlStopwatch = Stopwatch.StartNew();
-        var guideUrl = BuildGuideUrl(sourceUrl);
+        var guideUrl = BuildGuideUrl(sourceUrl, playlistGuideUrl);
         urlStopwatch.Stop();
         logger.LogInformation("Guide URL built in {BuildUrlMs}ms. GuideUrl={GuideUrl}", urlStopwatch.ElapsedMilliseconds, guideUrl);
 
@@ -72,7 +75,7 @@ public sealed class XmlTvGuideService(
         using var client = httpClientFactory.CreateClient(nameof(PlaylistService));
 
         var fetchStopwatch = Stopwatch.StartNew();
-        var content = await client.GetStringAsync(guideUrl, cancellationToken);
+        var content = await DownloadGuideContentAsync(client, guideUrl, cancellationToken);
         fetchStopwatch.Stop();
         logger.LogInformation("Guide download completed in {FetchMs}ms. PayloadChars={PayloadChars}", fetchStopwatch.ElapsedMilliseconds, content.Length);
 
@@ -278,8 +281,47 @@ public sealed class XmlTvGuideService(
             : null;
     }
 
-    private static string BuildGuideUrl(string sourceUrl)
+    private static async Task<string> DownloadGuideContentAsync(
+        HttpClient client,
+        string guideUrl,
+        CancellationToken cancellationToken)
     {
+        using var response = await client.GetAsync(guideUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        if (ShouldDecompressGzip(guideUrl, response.Content.Headers))
+        {
+            await using var gzipStream = new GZipStream(stream, CompressionMode.Decompress);
+            using var gzipReader = new StreamReader(gzipStream);
+            return await gzipReader.ReadToEndAsync(cancellationToken);
+        }
+
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync(cancellationToken);
+    }
+
+    private static bool ShouldDecompressGzip(string guideUrl, HttpContentHeaders headers)
+    {
+        return guideUrl.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ||
+               headers.ContentEncoding.Any(encoding => string.Equals(encoding, "gzip", StringComparison.OrdinalIgnoreCase)) ||
+               string.Equals(headers.ContentType?.MediaType, "application/gzip", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(headers.ContentType?.MediaType, "application/x-gzip", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildGuideUrl(string sourceUrl, string? playlistGuideUrl)
+    {
+        if (!string.IsNullOrWhiteSpace(playlistGuideUrl))
+        {
+            if (Uri.TryCreate(playlistGuideUrl.Trim(), UriKind.Absolute, out var guideUri) &&
+                (guideUri.Scheme == Uri.UriSchemeHttp || guideUri.Scheme == Uri.UriSchemeHttps))
+            {
+                return guideUri.ToString();
+            }
+
+            throw new InvalidOperationException("The playlist guide URL is not a valid http or https URL.");
+        }
+
         if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri))
         {
             throw new InvalidOperationException("Enter a valid playlist URL before loading the guide.");

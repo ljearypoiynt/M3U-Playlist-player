@@ -32,10 +32,11 @@ public sealed class PlaylistService(
         response.EnsureSuccessStatusCode();
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        var entries = parser.Parse(content);
+        var parsedPlaylist = parser.ParseWithMetadata(content);
+        var entries = parsedPlaylist.Entries;
         var result = entries.Count == 0 && TryGetXtreamCredentials(uri, out var xtream)
             ? await GetXtreamLiveStreamsAsync(client, xtream, sourceUrl, cancellationToken)
-            : new PlaylistResult(entries, DateTimeOffset.Now, sourceUrl);
+            : new PlaylistResult(entries, DateTimeOffset.Now, sourceUrl, GuideUrl: parsedPlaylist.GuideUrl);
 
         memoryCache.Set(cacheKey, result, TimeSpan.FromMinutes(Math.Max(1, options.Value.CacheMinutes)));
         return result;

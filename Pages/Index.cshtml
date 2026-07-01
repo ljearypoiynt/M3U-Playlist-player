@@ -84,6 +84,10 @@
             {
                 <span>downloaded @Model.DownloadedAt.Value.ToLocalTime().ToString("g") via @Model.SourceKind</span>
             }
+            @if (Model.ShowGuide && !string.IsNullOrWhiteSpace(Model.GuideUrl))
+            {
+                <span class="guide-source">Guide source <a href="@Model.GuideUrl" rel="noreferrer" target="_blank">playlist EPG</a></span>
+            }
         </p>
     </div>
 </section>
