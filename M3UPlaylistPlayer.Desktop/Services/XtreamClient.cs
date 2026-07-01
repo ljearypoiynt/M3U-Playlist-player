@@ -593,7 +593,7 @@ public sealed class XtreamClient
 
             if (IsMissingGuide(guide))
             {
-                xmltvGuide.TryGetValue($"name:{NormalizeGuideName(item.Name)}", out guide);
+                guide = MatchXmltvGuideForItem(xmltvGuide, item);
             }
 
             if (!IsMissingGuide(guide))
@@ -1177,7 +1177,13 @@ public sealed class XtreamClient
             if (guide.TryGetValue(alias.Value, out var guideInfo))
             {
                 guide[$"name:{alias.Key}"] = guideInfo;
+                AddGuideAlias(guide, alias.Key, guideInfo);
             }
+        }
+
+        foreach (var pair in guide.ToArray())
+        {
+            AddGuideAlias(guide, pair.Key, pair.Value);
         }
 
         totalStopwatch.Stop();
@@ -1522,14 +1528,76 @@ public sealed class XtreamClient
             : null;
     }
 
+    private static GuideInfo? MatchXmltvGuideForItem(
+        IReadOnlyDictionary<string, GuideInfo> guide,
+        MediaItem item)
+    {
+        foreach (var key in GetGuideLookupKeys(item))
+        {
+            if (guide.TryGetValue(key, out var guideInfo))
+            {
+                return guideInfo;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> GetGuideLookupKeys(MediaItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.EpgId))
+        {
+            yield return item.EpgId;
+
+            var normalizedEpgId = NormalizeGuideName(item.EpgId);
+            if (!string.IsNullOrWhiteSpace(normalizedEpgId))
+            {
+                yield return $"alias:{normalizedEpgId}";
+                yield return $"alias:{CompactGuideKey(normalizedEpgId)}";
+            }
+        }
+
+        var normalizedName = NormalizeGuideName(item.Name);
+        if (!string.IsNullOrWhiteSpace(normalizedName))
+        {
+            yield return $"name:{normalizedName}";
+            yield return $"alias:{normalizedName}";
+            yield return $"alias:{CompactGuideKey(normalizedName)}";
+        }
+    }
+
+    private static void AddGuideAlias(Dictionary<string, GuideInfo> guide, string value, GuideInfo guideInfo)
+    {
+        var normalized = NormalizeGuideName(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        guide.TryAdd($"alias:{normalized}", guideInfo);
+
+        var compact = CompactGuideKey(normalized);
+        if (!string.IsNullOrWhiteSpace(compact))
+        {
+            guide.TryAdd($"alias:{compact}", guideInfo);
+        }
+    }
+
     private static string NormalizeGuideName(string value)
     {
         var normalized = WebUtility.HtmlDecode(value).ToLowerInvariant();
+        normalized = Regex.Replace(normalized, "@\\b(fhd|uhd|hd|sd)\\b", " ");
         normalized = normalized.Replace('▎', ' ').Replace('|', ' ');
+        normalized = Regex.Replace(normalized, "\\b\\d{3,4}p\\b", " ");
         normalized = Regex.Replace(normalized, "\\b(uk|us|ca|ie|in|eu|ar|rl)\\b", " ");
         normalized = Regex.Replace(normalized, "\\b(fhd|uhd|hd|sd|raw|vip|rec)\\b", " ");
         normalized = Regex.Replace(normalized, "[^a-z0-9+]+", " ");
         return Regex.Replace(normalized, "\\s+", " ").Trim();
+    }
+
+    private static string CompactGuideKey(string value)
+    {
+        return Regex.Replace(value, "\\s+", string.Empty);
     }
 
     private async Task<T?> GetJsonAsync<T>(string url, CancellationToken cancellationToken)
