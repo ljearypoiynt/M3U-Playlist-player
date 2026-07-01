@@ -1,4 +1,4 @@
-# M3U Playlist Player
+# IPTV Sidekick
 
 A small cross-platform .NET web app for downloading an M3U playlist, searching and filtering channels, and launching streams on your laptop.
 

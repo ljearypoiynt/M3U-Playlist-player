@@ -7,7 +7,7 @@
         d:DesignWidth="1280"
         d:DesignHeight="760"
         x:Class="M3UPlaylistPlayer.Desktop.MainWindow"
-        Title="M3U Playlist Player"
+        Title="IPTV Sidekick"
         Width="1280"
         Height="760"
         MinWidth="980"
@@ -21,7 +21,7 @@
                 Padding="16">
             <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
                 <StackPanel Spacing="4">
-                    <TextBlock Text="M3U Playlist Player"
+                    <TextBlock Text="IPTV Sidekick"
                                FontSize="22"
                                FontWeight="SemiBold"
                                Foreground="#18201D" />

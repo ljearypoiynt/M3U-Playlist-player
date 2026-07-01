@@ -94,7 +94,7 @@ public sealed class LocalApiServer
 
         _app.MapGet("/", () => Results.Json(new
         {
-            name = "M3U Playlist Player Local API",
+            name = "IPTV Sidekick Local API",
             status = "running",
             endpoints = new[]
             {
@@ -142,7 +142,7 @@ public sealed class LocalApiServer
         {
             ["name"] = "M3U TV Remote",
             ["short_name"] = "M3U Remote",
-            ["description"] = "Local remote control for M3U Playlist Player.",
+            ["description"] = "Local remote control for IPTV Sidekick.",
             ["start_url"] = string.IsNullOrWhiteSpace(session)
                 ? "/sessions"
                 : $"/remote?session={Uri.EscapeDataString(session)}",

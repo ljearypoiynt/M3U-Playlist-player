@@ -3,7 +3,7 @@ var CORE_ASSETS = [
   '/remote',
   '/remote/styles.css',
   '/remote/app.js',
-  '/remote/icon.svg'
+  '/remote/iptv-logo-large.png'
 ];
 
 self.addEventListener('install', function (event) {
