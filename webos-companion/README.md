@@ -4,25 +4,13 @@ This is the Phase 2 prototype TV app. It connects to the desktop app's local API
 
 ## Before Opening On The TV
 
-1. Start the desktop app:
-
-```powershell
-dotnet run --project ..\M3UPlaylistPlayer.Desktop\M3UPlaylistPlayer.Desktop.csproj
-```
-
-2. Check the API from the laptop:
-
-```powershell
-Invoke-WebRequest -Uri http://localhost:5055/api/status -UseBasicParsing
-```
-
-3. Use the `localUrl` value on the TV. On this machine it is currently:
+The TV app always uses the hosted gateway:
 
 ```text
-http://192.168.50.99:5055
+https://api.iptvsidekick.live
 ```
 
-If Windows asks about firewall access, allow the app on private networks. The TV and laptop must be on the same Wi-Fi/LAN.
+Open Setup on the TV and enter the playlist details, or scan the phone setup QR for easier typing.
 
 ## webOS Packaging
 

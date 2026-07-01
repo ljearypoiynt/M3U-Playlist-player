@@ -19,8 +19,11 @@ function readJsonStorage(key, fallback) {
   }
 }
 
+var gatewayUrl = 'https://api.iptvsidekick.live';
+localStorage.removeItem('serverUrl');
+
 var state = {
-  serverUrl: localStorage.getItem('serverUrl') || 'http://192.168.50.99:5055',
+  serverUrl: gatewayUrl,
   playlistUrl: localStorage.getItem('playlistUrl') || '',
   epgUrl: localStorage.getItem('epgUrl') || '',
   sessionId: localStorage.getItem('sessionId') || null,
@@ -73,7 +76,6 @@ var guidePageSize = 12;
 var listSearchTimer = null;
 
 var els = {
-  serverUrl: document.getElementById('serverUrl'),
   playlistUrl: document.getElementById('playlistUrl'),
   epgUrl: document.getElementById('epgUrl'),
   liveMode: document.getElementById('liveMode'),
@@ -130,7 +132,6 @@ var els = {
   playbackTab: document.getElementById('playbackTab')
 };
 
-els.serverUrl.value = state.serverUrl;
 els.playlistUrl.value = state.playlistUrl;
 els.epgUrl.value = state.epgUrl;
 updateGuideTabs();
@@ -350,11 +351,10 @@ document.addEventListener('backbutton', function (event) {
 });
 
 function connect() {
-  state.serverUrl = els.serverUrl.value.trim().replace(/\/$/, '');
+  state.serverUrl = gatewayUrl;
   state.playlistUrl = els.playlistUrl.value.trim();
   state.epgUrl = els.epgUrl.value.trim();
   updateConnectionSummary();
-  localStorage.setItem('serverUrl', state.serverUrl);
   localStorage.setItem('playlistUrl', state.playlistUrl);
   localStorage.setItem('epgUrl', state.epgUrl);
   stopRemotePolling();
@@ -497,8 +497,7 @@ function hideRemoteQr() {
 }
 
 function startPhoneSetup() {
-  state.serverUrl = els.serverUrl.value.trim().replace(/\/$/, '');
-  localStorage.setItem('serverUrl', state.serverUrl);
+  state.serverUrl = gatewayUrl;
   stopSetupPolling();
   state.setupId = null;
   setStatus('Creating phone setup link...');
