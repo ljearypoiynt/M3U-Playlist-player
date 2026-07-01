@@ -101,6 +101,8 @@ var els = {
   setupUrlText: document.getElementById('setupUrlText'),
   setupCategoryList: document.getElementById('setupCategoryList'),
   setupCategorySummary: document.getElementById('setupCategorySummary'),
+  setupProgress: document.getElementById('setupProgress'),
+  setupProgressText: document.getElementById('setupProgressText'),
   selectAllCategories: document.getElementById('selectAllCategories'),
   clearCategories: document.getElementById('clearCategories'),
   backToPlaylistSetup: document.getElementById('backToPlaylistSetup'),
@@ -112,7 +114,6 @@ var els = {
   listEditorScreen: document.getElementById('listEditorScreen'),
   closeListEditor: document.getElementById('closeListEditor'),
   cancelList: document.getElementById('cancelList'),
-  saveList: document.getElementById('saveList'),
   createList: document.getElementById('createList'),
   listEditorTitle: document.getElementById('listEditorTitle'),
   listName: document.getElementById('listName'),
@@ -151,12 +152,14 @@ els.newSession.addEventListener('click', function () {
   createNewSessionFromSetup();
 });
 els.saveSetup.addEventListener('click', function () {
-  connect().then(function () {
-    if (state.sessionId) {
+  setSetupBusy(true, 'Connecting to your playlist...');
+  connect().then(function (connected) {
+    if (connected && state.sessionId) {
       startCategorySetup();
-    } else if (!state.playlistUrl) {
+    } else if (connected && !state.playlistUrl) {
       closeSetupScreen();
     }
+    setSetupBusy(false);
   });
 });
 els.startPhoneSetup.addEventListener('click', function () {
@@ -223,7 +226,6 @@ els.finishCategorySetup.addEventListener('click', function () {
 });
 els.closeListEditor.addEventListener('click', closeListEditor);
 els.cancelList.addEventListener('click', closeListEditor);
-els.saveList.addEventListener('click', saveCuratedList);
 els.createList.addEventListener('click', saveCuratedList);
 els.listSearch.addEventListener('input', function () {
   window.clearTimeout(listSearchTimer);
@@ -350,6 +352,21 @@ document.addEventListener('backbutton', function (event) {
   }
 });
 
+function setSetupBusy(isBusy, message) {
+  if (els.setupProgress) {
+    els.setupProgress.hidden = !isBusy;
+  }
+
+  if (els.setupProgressText && message) {
+    els.setupProgressText.textContent = message;
+  }
+
+  els.saveSetup.disabled = !!isBusy;
+  els.newSession.disabled = !!isBusy;
+  els.startPhoneSetup.disabled = !!isBusy;
+  els.setupScreen.classList.toggle('is-processing', !!isBusy);
+}
+
 function connect() {
   state.serverUrl = gatewayUrl;
   state.playlistUrl = els.playlistUrl.value.trim();
@@ -367,7 +384,10 @@ function connect() {
         startRemotePolling();
         return loadCuratedLists()
           .then(loadCategories)
-          .then(loadMedia);
+          .then(loadMedia)
+          .then(function () {
+            return true;
+          });
       }
 
       return createSession()
@@ -377,11 +397,15 @@ function connect() {
           startRemotePolling();
           return loadCuratedLists()
             .then(loadCategories)
-            .then(loadMedia);
+            .then(loadMedia)
+            .then(function () {
+              return true;
+            });
         });
     })
     .catch(function (error) {
       setStatus('Could not connect: ' + error.message);
+      return false;
     });
 }
 
@@ -576,7 +600,11 @@ function applyPhoneSetup(configuration) {
     localStorage.setItem('selectedCategories', JSON.stringify(state.selectedCategories));
   }
   setStatus('Phone setup saved. Connecting...');
-  connect().then(function () {
+  connect().then(function (connected) {
+    if (!connected) {
+      return;
+    }
+
     if (state.sessionId && !Array.isArray(excludedCategories)) {
       startCategorySetup();
       return;
@@ -1075,7 +1103,6 @@ function openListEditor(list, returnFocus) {
   setEditorSelectedIds(list && list.itemIds);
   els.listEditorTitle.textContent = state.editingListId ? 'Edit favourites list' : 'New favourites list';
   els.createList.textContent = state.editingListId ? 'Save changes' : 'Create list';
-  els.saveList.textContent = state.editingListId ? 'Save changes' : 'Save list';
   updateEditorSelectionCount();
   els.listEditorScreen.hidden = false;
   loadEditorMedia();
@@ -1488,6 +1515,11 @@ function appendCard(item, index) {
   card.addEventListener('click', function () {
     selectItem(item);
     playSelected();
+  });
+  card.addEventListener('dblclick', function (event) {
+    event.preventDefault();
+    selectItem(item);
+    playSelected({ fullscreen: true });
   });
   card.addEventListener('focus', function () {
     card.scrollIntoView({

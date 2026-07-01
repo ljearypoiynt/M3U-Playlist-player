@@ -93,6 +93,10 @@
                   <button id="newSession" class="mode setup-new-session" type="button">New Session</button>
                   <button id="saveSetup" class="primary" type="button">Save & Connect</button>
                 </div>
+                <div id="setupProgress" class="setup-progress" role="status" aria-live="polite" hidden>
+                  <span id="setupProgressText">Connecting...</span>
+                  <span class="setup-progress-bar" aria-hidden="true"></span>
+                </div>
               </div>
 
               <aside class="setup-qr">
@@ -151,7 +155,6 @@
             <h2 id="listEditorTitle">New favourites list</h2>
             <p>Search and select the channels you want in this list.</p>
           </div>
-          <button id="saveList" class="primary save-list-button" type="button">Save list</button>
         </header>
 
         <div class="list-editor-body">
