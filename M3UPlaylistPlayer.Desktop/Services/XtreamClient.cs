@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Threading;
 using System.Xml;
+using System.IO.Compression;
+using System.Net.Http.Headers;
 using M3UPlaylistPlayer.Desktop.Models;
 
 namespace M3UPlaylistPlayer.Desktop.Services;
@@ -141,11 +143,9 @@ public sealed class XtreamClient
     {
         if (_settings.IsM3uPlaylist)
         {
-            return ids
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(MaxGuideIdsPerRequest)
-                .ToDictionary(id => id, _ => new GuideInfo(null, null), StringComparer.OrdinalIgnoreCase);
+            return includeMainGuide
+                ? await GetM3uGuideAsync(ids, cancellationToken)
+                : CreateEmptyGuide(ids);
         }
 
         var totalStopwatch = Stopwatch.StartNew();
@@ -556,6 +556,62 @@ public sealed class XtreamClient
             .OrderBy(item => item.Group)
             .ThenBy(item => item.Name)
             .ToArray();
+    }
+
+    private async Task<IReadOnlyDictionary<string, GuideInfo>> GetM3uGuideAsync(
+        IReadOnlyCollection<string> ids,
+        CancellationToken cancellationToken)
+    {
+        var requestedIds = ids
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxGuideIdsPerRequest)
+            .ToArray();
+
+        var results = CreateEmptyGuide(requestedIds);
+        if (requestedIds.Length == 0 || string.IsNullOrWhiteSpace(_settings.EpgUrl))
+        {
+            return results;
+        }
+
+        var items = await GetM3uMediaAsync(cancellationToken);
+        var itemsById = items.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        var xmltvGuide = await GetXmltvGuideAsync(cancellationToken);
+
+        foreach (var id in requestedIds)
+        {
+            if (!itemsById.TryGetValue(id, out var item))
+            {
+                continue;
+            }
+
+            GuideInfo? guide = null;
+            if (!string.IsNullOrWhiteSpace(item.EpgId))
+            {
+                xmltvGuide.TryGetValue(item.EpgId, out guide);
+            }
+
+            if (IsMissingGuide(guide))
+            {
+                xmltvGuide.TryGetValue($"name:{NormalizeGuideName(item.Name)}", out guide);
+            }
+
+            if (!IsMissingGuide(guide))
+            {
+                results[id] = guide!;
+            }
+        }
+
+        return results;
+    }
+
+    private static Dictionary<string, GuideInfo> CreateEmptyGuide(IEnumerable<string> ids)
+    {
+        return ids
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxGuideIdsPerRequest)
+            .ToDictionary(id => id, _ => new GuideInfo(null, null), StringComparer.OrdinalIgnoreCase);
     }
 
     private static MediaItem? CreateM3uMediaItem(string extInf, string rawUrl, Uri? baseUri)
@@ -1031,7 +1087,7 @@ public sealed class XtreamClient
         var now = DateTimeOffset.UtcNow;
 
         var downloadStopwatch = Stopwatch.StartNew();
-        var content = await _httpClient.GetStringAsync(BuildXmltvUrl(), cancellationToken);
+        var content = await DownloadStringMaybeGzipAsync(BuildXmltvUrl(), cancellationToken);
         downloadStopwatch.Stop();
 
         var aliasesStopwatch = Stopwatch.StartNew();
@@ -1480,6 +1536,31 @@ public sealed class XtreamClient
     {
         await using var stream = await _httpClient.GetStreamAsync(url, cancellationToken);
         return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken);
+    }
+
+    private async Task<string> DownloadStringMaybeGzipAsync(string url, CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        if (ShouldDecompressGzip(url, response.Content.Headers))
+        {
+            await using var gzipStream = new GZipStream(stream, CompressionMode.Decompress);
+            using var gzipReader = new StreamReader(gzipStream);
+            return await gzipReader.ReadToEndAsync(cancellationToken);
+        }
+
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync(cancellationToken);
+    }
+
+    private static bool ShouldDecompressGzip(string url, HttpContentHeaders headers)
+    {
+        return url.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ||
+               headers.ContentEncoding.Any(encoding => string.Equals(encoding, "gzip", StringComparison.OrdinalIgnoreCase)) ||
+               string.Equals(headers.ContentType?.MediaType, "application/gzip", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(headers.ContentType?.MediaType, "application/x-gzip", StringComparison.OrdinalIgnoreCase);
     }
 
     private string BuildApiUrl(string action)
