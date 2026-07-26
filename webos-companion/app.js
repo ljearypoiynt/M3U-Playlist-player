@@ -51,6 +51,8 @@ var state = {
   selected: null,
   guideLoaded: {},
   guideLoading: {},
+  guideRetryQueued: {},
+  lastSidebarControl: null,
   videoFullscreen: false,
   playbackRequestId: 0,
   currentHlsSessionId: null,
@@ -94,6 +96,7 @@ var els = {
   remoteQrOverlay: document.getElementById('remoteQrOverlay'),
   remoteQr: document.getElementById('remoteQr'),
   remoteQrText: document.getElementById('remoteQrText'),
+  sidebar: document.querySelector('.sidebar'),
   setupScreen: document.getElementById('setupScreen'),
   setupTabButtons: document.querySelectorAll('.setup-tab'),
   setupPanels: document.querySelectorAll('.setup-tab-panel'),
@@ -122,6 +125,7 @@ var els = {
   listFooterCount: document.getElementById('listFooterCount'),
   listEditorItems: document.getElementById('listEditorItems'),
   connectionSummary: document.getElementById('connectionSummary'),
+  appVersion: document.getElementById('appVersion'),
   status: document.getElementById('status'),
   grid: document.getElementById('grid'),
   preview: document.querySelector('.preview'),
@@ -236,8 +240,16 @@ els.listEditorItems.addEventListener('scroll', function () {
     loadMoreEditorMedia();
   }
 });
+function shouldUseSetupKeyboardLayout(target) {
+  if (!target || target.tagName !== 'INPUT') {
+    return false;
+  }
+
+  return ['email', 'number', 'password', 'search', 'tel', 'text', 'url'].indexOf(target.type) !== -1;
+}
+
 els.setupScreen.addEventListener('focusin', function (event) {
-  if (event.target && event.target.tagName === 'INPUT') {
+  if (shouldUseSetupKeyboardLayout(event.target)) {
     els.setupScreen.classList.add('keyboard-open');
     window.setTimeout(function () {
       event.target.scrollIntoView({
@@ -250,7 +262,7 @@ els.setupScreen.addEventListener('focusin', function (event) {
 els.setupScreen.addEventListener('focusout', function () {
   window.setTimeout(function () {
     if (!els.setupScreen.contains(document.activeElement) ||
-        document.activeElement.tagName !== 'INPUT') {
+        !shouldUseSetupKeyboardLayout(document.activeElement)) {
       els.setupScreen.classList.remove('keyboard-open');
     }
   }, 80);
@@ -275,6 +287,11 @@ els.player.addEventListener('webkitendfullscreen', function () {
 els.grid.addEventListener('scroll', function () {
   if (isNearGridBottom()) {
     loadMoreMedia();
+  }
+});
+els.sidebar.addEventListener('focusin', function (event) {
+  if (isSidebarControl(event.target)) {
+    state.lastSidebarControl = event.target;
   }
 });
 
@@ -317,6 +334,18 @@ document.addEventListener('keydown', function (event) {
 
   if (event.key === 'Enter' && focused === els.player) {
     toggleFullscreen();
+    return;
+  }
+
+  if (event.key === 'ArrowRight' && isFocusInSidebar(focused)) {
+    event.preventDefault();
+    focusGridFromSidebar();
+    return;
+  }
+
+  if (event.key === 'ArrowLeft' && (focused === els.grid || focused.classList.contains('card'))) {
+    event.preventDefault();
+    focusLastSidebarControl();
     return;
   }
 
@@ -1354,6 +1383,7 @@ function loadMedia() {
   state.selected = null;
   state.guideLoaded = {};
   state.guideLoading = {};
+  state.guideRetryQueued = {};
   els.selectedTitle.textContent = 'Nothing selected';
   els.selectedChannel.textContent = 'No channel selected';
   els.selectedMeta.textContent = '';
@@ -1448,6 +1478,79 @@ function appendItems(items, startIndex) {
 
 function isNearGridBottom() {
   return els.grid.scrollTop + els.grid.clientHeight >= els.grid.scrollHeight - 240;
+}
+
+function isSidebarControl(target) {
+  return !!target &&
+    els.sidebar.contains(target) &&
+    typeof target.focus === 'function' &&
+    !target.disabled;
+}
+
+function isFocusInSidebar(target) {
+  return !!target && els.sidebar.contains(target);
+}
+
+function focusGridFromSidebar() {
+  var card = findGridCardForSelectedItem() || els.grid.querySelector('.card');
+
+  if (card) {
+    card.focus();
+    selectItem(state.items[Number(card.dataset.index)]);
+    return;
+  }
+
+  els.grid.focus();
+}
+
+function focusLastSidebarControl() {
+  var target = isUsableSidebarControl(state.lastSidebarControl)
+    ? state.lastSidebarControl
+    : getFirstUsableSidebarControl();
+
+  if (target) {
+    target.focus();
+  }
+}
+
+function findGridCardForSelectedItem() {
+  var cards = els.grid.querySelectorAll('.card');
+  var index;
+
+  if (!state.selected) {
+    return null;
+  }
+
+  for (index = 0; index < cards.length; index += 1) {
+    if (cards[index].dataset.id === state.selected.id) {
+      return cards[index];
+    }
+  }
+
+  return null;
+}
+
+function getFirstUsableSidebarControl() {
+  var controls = els.sidebar.querySelectorAll('button, input, select, [tabindex]');
+  var index;
+
+  for (index = 0; index < controls.length; index += 1) {
+    if (isUsableSidebarControl(controls[index])) {
+      return controls[index];
+    }
+  }
+
+  return null;
+}
+
+function isUsableSidebarControl(control) {
+  return !!control &&
+    els.sidebar.contains(control) &&
+    typeof control.focus === 'function' &&
+    !control.disabled &&
+    !control.hidden &&
+    control.getAttribute('aria-hidden') !== 'true' &&
+    control.offsetParent !== null;
 }
 
 function isGridNavigationKey(key) {
@@ -1598,6 +1701,7 @@ function requestGuideChunk(ids, offset, requestId, source) {
     .then(function (data) {
       var guide = data.guide || {};
       var serverMissingIds = data.missingIds || data.MissingIds || [];
+      var guideLoading = !!(data.guideLoading || data.GuideLoading);
       var missingLookup = {};
       var shortIds = [];
       var index;
@@ -1620,7 +1724,9 @@ function requestGuideChunk(ids, offset, requestId, source) {
         info = guide[id];
         isMissing = missingLookup[id] || !info || isMissingGuideInfo(info);
 
-        if (guideSource === 'main' && isMissing) {
+        if (guideSource === 'main' && isMissing && guideLoading) {
+          state.guideLoading[id] = false;
+        } else if (guideSource === 'main' && isMissing) {
           shortIds.push(id);
         } else {
           state.guideLoaded[id] = true;
@@ -1643,7 +1749,9 @@ function requestGuideChunk(ids, offset, requestId, source) {
         }
       }
 
-      if (guideSource === 'main' && shortIds.length > 0) {
+      if (guideSource === 'main' && guideLoading) {
+        scheduleGuideRetry(chunk, requestId);
+      } else if (guideSource === 'main' && shortIds.length > 0) {
         requestGuideChunk(shortIds, 0, requestId, 'short');
       }
     })
@@ -1657,6 +1765,47 @@ function requestGuideChunk(ids, offset, requestId, source) {
     .then(function () {
       requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
     });
+}
+
+function scheduleGuideRetry(ids, requestId) {
+  var retryIds = [];
+  var index;
+  var id;
+
+  for (index = 0; index < ids.length; index += 1) {
+    id = ids[index];
+    if (!state.guideLoaded[id] && !state.guideRetryQueued[id]) {
+      state.guideRetryQueued[id] = true;
+      retryIds.push(id);
+    }
+  }
+
+  if (retryIds.length === 0) {
+    return;
+  }
+
+  window.setTimeout(function () {
+    var pending = [];
+    var retryIndex;
+    var retryId;
+
+    if (requestId !== state.requestId) {
+      return;
+    }
+
+    for (retryIndex = 0; retryIndex < retryIds.length; retryIndex += 1) {
+      retryId = retryIds[retryIndex];
+      state.guideRetryQueued[retryId] = false;
+      if (!state.guideLoaded[retryId] && !state.guideLoading[retryId]) {
+        state.guideLoading[retryId] = true;
+        pending.push(retryId);
+      }
+    }
+
+    if (pending.length > 0) {
+      requestGuideChunk(pending, 0, requestId, 'main');
+    }
+  }, 12000);
 }
 
 function isMissingGuideInfo(info) {
@@ -2278,6 +2427,29 @@ function setStatus(message) {
   els.status.textContent = message;
 }
 
+function loadAppVersion() {
+  if (!els.appVersion || !window.fetch) {
+    return;
+  }
+
+  fetch('appinfo.json')
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error('appinfo.json returned ' + response.status);
+      }
+
+      return response.json();
+    })
+    .then(function (appInfo) {
+      if (appInfo && appInfo.version) {
+        els.appVersion.textContent = 'v' + appInfo.version;
+      }
+    })
+    .catch(function () {
+      // Keep the version baked into index.html if appinfo.json is unavailable.
+    });
+}
+
 function formatErrorBody(body) {
   if (!body) {
     return '';
@@ -2291,6 +2463,7 @@ function formatErrorBody(body) {
   }
 }
 
+loadAppVersion();
 updateConnectionSummary();
 if (state.playlistUrl) {
   connect();

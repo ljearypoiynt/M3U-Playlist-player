@@ -116,6 +116,7 @@ public sealed class XmlTvGuideService(
     {
         var parseStopwatch = Stopwatch.StartNew();
         var wanted = channelIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var useLocalClockForZeroOffset = ShouldUseLocalClockForZeroOffsetXmltv(content);
         var now = DateTimeOffset.Now;
         var latestStop = now.AddHours(-6);
         var horizon = now.AddHours(18);
@@ -156,8 +157,8 @@ public sealed class XmlTvGuideService(
 
             programmesForWantedChannels++;
 
-            var start = ParseXmlTvTime(reader.GetAttribute("start"));
-            var stop = ParseXmlTvTime(reader.GetAttribute("stop"));
+            var start = ParseXmlTvTime(reader.GetAttribute("start"), useLocalClockForZeroOffset);
+            var stop = ParseXmlTvTime(reader.GetAttribute("stop"), useLocalClockForZeroOffset);
             if (start is null || stop is null || stop <= latestStop || start > horizon)
             {
                 continue;
@@ -246,7 +247,7 @@ public sealed class XmlTvGuideService(
         return current is null || candidate.Start < current.Start ? candidate : current;
     }
 
-    private static DateTimeOffset? ParseXmlTvTime(string? value)
+    private static DateTimeOffset? ParseXmlTvTime(string? value, bool useLocalClockForZeroOffset)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -264,6 +265,14 @@ public sealed class XmlTvGuideService(
             }
         }
 
+        if (useLocalClockForZeroOffset &&
+            TryReadXmlTvDateAndOffset(normalized, out var localClock, out var offset) &&
+            IsZeroOffset(offset))
+        {
+            localClock = DateTime.SpecifyKind(localClock, DateTimeKind.Unspecified);
+            return new DateTimeOffset(localClock, TimeZoneInfo.Local.GetUtcOffset(localClock));
+        }
+
         string[] formats =
         [
             "yyyyMMddHHmmss zzz",
@@ -279,6 +288,48 @@ public sealed class XmlTvGuideService(
             out var parsed)
             ? parsed
             : null;
+    }
+
+    private static bool TryReadXmlTvDateAndOffset(string value, out DateTime localClock, out string offset)
+    {
+        localClock = default;
+        offset = string.Empty;
+
+        if (value.Length < 14)
+        {
+            return false;
+        }
+
+        var date = value[..14];
+        offset = value[14..].Trim().Replace(" ", string.Empty);
+        if (offset.Length == 5 && (offset[0] == '+' || offset[0] == '-'))
+        {
+            offset = offset.Insert(3, ":");
+        }
+
+        return DateTime.TryParseExact(
+            date,
+            "yyyyMMddHHmmss",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out localClock);
+    }
+
+    private static bool ShouldUseLocalClockForZeroOffsetXmltv(string content)
+    {
+        var sample = content.Length <= 200_000 ? content : content[..200_000];
+        return sample.Contains("tvguide.co.uk", StringComparison.OrdinalIgnoreCase) ||
+               sample.Contains("sky.com", StringComparison.OrdinalIgnoreCase) ||
+               sample.Contains("epgdata/", StringComparison.OrdinalIgnoreCase) ||
+               System.Text.RegularExpressions.Regex.IsMatch(sample, "\\b(?:id|channel)=[\"'][^\"']+\\.uk[\"']", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsZeroOffset(string offset)
+    {
+        return string.Equals(offset, "+00:00", StringComparison.Ordinal) ||
+               string.Equals(offset, "-00:00", StringComparison.Ordinal) ||
+               string.Equals(offset, "+0000", StringComparison.Ordinal) ||
+               string.Equals(offset, "-0000", StringComparison.Ordinal);
     }
 
     private static async Task<string> DownloadGuideContentAsync(

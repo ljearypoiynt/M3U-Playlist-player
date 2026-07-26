@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
@@ -39,6 +40,7 @@ public sealed class XtreamClient
     private DateTimeOffset _xmltvGuideExpires = DateTimeOffset.MinValue;
     private DateTimeOffset _xmltvRetryAfter = DateTimeOffset.MinValue;
     private Task<IReadOnlyDictionary<string, GuideInfo>>? _xmltvGuideLoad;
+    private Task? _xmltvGuideObserver;
     private IReadOnlyList<MediaItem>? _m3uMediaCache;
     private DateTimeOffset _m3uMediaExpires = DateTimeOffset.MinValue;
     private Task<IReadOnlyList<MediaItem>>? _m3uMediaLoad;
@@ -56,6 +58,11 @@ public sealed class XtreamClient
             return kind == MediaKind.Live
                 ? await GetM3uMediaAsync(cancellationToken)
                 : [];
+        }
+
+        if (!HasXtreamApiSettings())
+        {
+            return [];
         }
 
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
@@ -84,6 +91,11 @@ public sealed class XtreamClient
                     .Order(StringComparer.OrdinalIgnoreCase)
                     .ToArray()
                 : [];
+        }
+
+        if (!HasXtreamApiSettings())
+        {
+            return [];
         }
 
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
@@ -116,6 +128,11 @@ public sealed class XtreamClient
                 : new MediaPage([], 0, HasMore: false);
         }
 
+        if (!HasXtreamApiSettings())
+        {
+            return new MediaPage([], 0, HasMore: false);
+        }
+
         var categoryAction = kind == MediaKind.Live ? "get_live_categories" : "get_vod_categories";
         var categories = await GetJsonAsync<List<XtreamCategory>>(BuildApiUrl(categoryAction), cancellationToken) ?? [];
         var categoryNames = categories
@@ -146,6 +163,11 @@ public sealed class XtreamClient
             return includeMainGuide
                 ? await GetM3uGuideAsync(ids, cancellationToken)
                 : CreateEmptyGuide(ids);
+        }
+
+        if (!HasXtreamApiSettings())
+        {
+            return CreateEmptyGuide(ids);
         }
 
         var totalStopwatch = Stopwatch.StartNew();
@@ -211,17 +233,28 @@ public sealed class XtreamClient
                 else
                 {
                     var xmltvFillStopwatch = Stopwatch.StartNew();
-                    try
-                    {
-                        await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
-                    }
-                    catch (Exception ex)
+                    if (TryStartXmltvGuideLoad(out var xmltvLoadState))
                     {
                         LogGuidePerf(
                             requestId,
-                            "XMLTV fill failed in {0}ms. {1}",
-                            xmltvFillStopwatch.ElapsedMilliseconds,
-                            FormatGuideException(ex));
+                            "XMLTV fill deferred. State={0}, MissingBefore={1}",
+                            xmltvLoadState,
+                            xmltvFillBefore);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            await FillMissingGuideFromXmltvAsync(results, liveIds, cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogGuidePerf(
+                                requestId,
+                                "XMLTV fill failed in {0}ms. {1}",
+                                xmltvFillStopwatch.ElapsedMilliseconds,
+                                FormatGuideException(ex));
+                        }
                     }
 
                     xmltvFillStopwatch.Stop();
@@ -417,6 +450,17 @@ public sealed class XtreamClient
         }
     }
 
+    public bool IsXmltvGuideLoading
+    {
+        get
+        {
+            lock (_guideLock)
+            {
+                return _xmltvGuideLoad is { IsCompleted: false };
+            }
+        }
+    }
+
     private async Task<IReadOnlyList<MediaItem>> GetLiveStreamsAsync(
         IReadOnlyDictionary<string, string> categoryNames,
         CancellationToken cancellationToken)
@@ -576,7 +620,11 @@ public sealed class XtreamClient
 
         var items = await GetM3uMediaAsync(cancellationToken);
         var itemsById = items.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
-        var xmltvGuide = await GetXmltvGuideAsync(cancellationToken);
+        if (!TryGetCachedXmltvGuide(out var xmltvGuide))
+        {
+            TryStartXmltvGuideLoad(out _);
+            return results;
+        }
 
         foreach (var id in requestedIds)
         {
@@ -714,13 +762,9 @@ public sealed class XtreamClient
         var selectedSet = ToGroupSet(selectedGroups);
         if (queryRegex is not null)
         {
-            try
+            if (!TryGetCachedXmltvGuide(out guide))
             {
-                guide = await GetXmltvGuideAsync(cancellationToken);
-            }
-            catch
-            {
-                guide = null;
+                TryStartXmltvGuideLoad(out _);
             }
         }
 
@@ -903,15 +947,7 @@ public sealed class XtreamClient
         Dictionary<string, GuideInfo> results,
         IReadOnlyList<int> liveIds)
     {
-        IReadOnlyDictionary<string, GuideInfo>? xmltvGuide;
-        lock (_guideLock)
-        {
-            xmltvGuide = _xmltvGuideCache is not null && _xmltvGuideExpires > DateTimeOffset.UtcNow
-                ? _xmltvGuideCache
-                : null;
-        }
-
-        if (xmltvGuide is null)
+        if (!TryGetCachedXmltvGuide(out var xmltvGuide))
         {
             return;
         }
@@ -969,7 +1005,7 @@ public sealed class XtreamClient
                 throw new InvalidOperationException("XMLTV load is cooling down after a previous failure.");
             }
 
-            _xmltvGuideLoad ??= LoadXmltvGuideAsync(cancellationToken);
+            _xmltvGuideLoad ??= LoadXmltvGuideAsync(CancellationToken.None);
             loadTask = _xmltvGuideLoad;
             staleGuide = _xmltvGuideCache;
         }
@@ -1036,6 +1072,89 @@ public sealed class XtreamClient
         return guide;
     }
 
+    private bool TryGetCachedXmltvGuide(out IReadOnlyDictionary<string, GuideInfo> guide)
+    {
+        lock (_guideLock)
+        {
+            if (_xmltvGuideCache is not null && _xmltvGuideExpires > DateTimeOffset.UtcNow)
+            {
+                guide = _xmltvGuideCache;
+                return true;
+            }
+        }
+
+        guide = new Dictionary<string, GuideInfo>(StringComparer.OrdinalIgnoreCase);
+        return false;
+    }
+
+    private bool TryStartXmltvGuideLoad(out string state)
+    {
+        lock (_guideLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_xmltvGuideCache is not null && _xmltvGuideExpires > now)
+            {
+                state = "cache-ready";
+                return false;
+            }
+
+            if (_xmltvRetryAfter > now)
+            {
+                state = "cooldown";
+                return false;
+            }
+
+            if (_xmltvGuideLoad is { IsCompleted: false })
+            {
+                state = "already-loading";
+                return true;
+            }
+
+            _xmltvGuideLoad = LoadXmltvGuideAsync(CancellationToken.None);
+            _xmltvGuideObserver = ObserveXmltvGuideLoadAsync(_xmltvGuideLoad);
+            state = "started";
+            return true;
+        }
+    }
+
+    private async Task ObserveXmltvGuideLoadAsync(Task<IReadOnlyDictionary<string, GuideInfo>> loadTask)
+    {
+        try
+        {
+            var guide = await loadTask.ConfigureAwait(false);
+            lock (_guideLock)
+            {
+                _xmltvGuideCache = guide;
+                _xmltvGuideExpires = DateTimeOffset.UtcNow.AddMinutes(20);
+                _xmltvRetryAfter = DateTimeOffset.MinValue;
+                if (ReferenceEquals(_xmltvGuideLoad, loadTask))
+                {
+                    _xmltvGuideLoad = null;
+                    _xmltvGuideObserver = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (_guideLock)
+            {
+                if (ReferenceEquals(_xmltvGuideLoad, loadTask))
+                {
+                    _xmltvGuideLoad = null;
+                    _xmltvGuideObserver = null;
+                }
+
+                _xmltvRetryAfter = DateTimeOffset.UtcNow.AddSeconds(XmltvFailureCooldownSeconds);
+            }
+
+            LogGuidePerf(
+                "background-load-fail",
+                "XMLTV background load failed. {0}, RetryInSeconds={1}",
+                FormatGuideException(ex),
+                XmltvFailureCooldownSeconds);
+        }
+    }
+
     private bool TryGetXmltvFailureCooldown(out TimeSpan remaining)
     {
         lock (_guideLock)
@@ -1051,6 +1170,13 @@ public sealed class XtreamClient
             remaining = _xmltvRetryAfter - now;
             return true;
         }
+    }
+
+    private bool HasXtreamApiSettings()
+    {
+        return !string.IsNullOrWhiteSpace(_settings.Host) &&
+               !string.IsNullOrWhiteSpace(_settings.Username) &&
+               !string.IsNullOrWhiteSpace(_settings.Password);
     }
 
     private static string FormatGuideException(Exception ex)
@@ -1089,6 +1215,7 @@ public sealed class XtreamClient
         var downloadStopwatch = Stopwatch.StartNew();
         var content = await DownloadStringMaybeGzipAsync(BuildXmltvUrl(), cancellationToken);
         downloadStopwatch.Stop();
+        var useLocalClockForZeroOffset = ShouldUseLocalClockForZeroOffsetXmltv(content);
 
         var aliasesStopwatch = Stopwatch.StartNew();
         var channelAliases = ReadXmltvChannelAliases(content);
@@ -1113,8 +1240,8 @@ public sealed class XtreamClient
             cancellationToken.ThrowIfCancellationRequested();
             var attrs = match.Groups["attrs"].Value;
             var channel = ReadXmlAttribute(attrs, "channel");
-            var start = ParseXmltvTime(ReadXmlAttribute(attrs, "start"));
-            var stop = ParseXmltvTime(ReadXmlAttribute(attrs, "stop"));
+            var start = ParseXmltvTime(ReadXmlAttribute(attrs, "start"), useLocalClockForZeroOffset);
+            var stop = ParseXmltvTime(ReadXmlAttribute(attrs, "stop"), useLocalClockForZeroOffset);
             if (string.IsNullOrWhiteSpace(channel) || start is null || stop is null || stop <= now)
             {
                 continue;
@@ -1657,7 +1784,7 @@ public sealed class XtreamClient
         return $"{_settings.Origin}/xmltv.php?username={Uri.EscapeDataString(_settings.Username)}&password={Uri.EscapeDataString(_settings.Password)}";
     }
 
-    private static DateTimeOffset? ParseXmltvTime(string? value)
+    private static DateTimeOffset? ParseXmltvTime(string? value, bool useLocalClockForZeroOffset)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length < 14)
         {
@@ -1671,14 +1798,43 @@ public sealed class XtreamClient
             offset = $"{offset[..3]}:{offset[3..]}";
         }
 
+        if ((string.IsNullOrWhiteSpace(offset) || useLocalClockForZeroOffset && IsZeroOffset(offset)) &&
+            DateTime.TryParseExact(
+                date,
+                "yyyyMMddHHmmss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var localClock))
+        {
+            localClock = DateTime.SpecifyKind(localClock, DateTimeKind.Unspecified);
+            return new DateTimeOffset(localClock, TimeZoneInfo.Local.GetUtcOffset(localClock));
+        }
+
         return DateTimeOffset.TryParseExact(
             $"{date} {offset}",
             "yyyyMMddHHmmss zzz",
-            System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.None,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
             out var result)
             ? result
             : null;
+    }
+
+    private static bool ShouldUseLocalClockForZeroOffsetXmltv(string content)
+    {
+        var sample = content.Length <= 200_000 ? content : content[..200_000];
+        return sample.Contains("tvguide.co.uk", StringComparison.OrdinalIgnoreCase) ||
+               sample.Contains("sky.com", StringComparison.OrdinalIgnoreCase) ||
+               sample.Contains("epgdata/", StringComparison.OrdinalIgnoreCase) ||
+               Regex.IsMatch(sample, "\\b(?:id|channel)=[\"'][^\"']+\\.uk[\"']", RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsZeroOffset(string offset)
+    {
+        return string.Equals(offset, "+00:00", StringComparison.Ordinal) ||
+               string.Equals(offset, "-00:00", StringComparison.Ordinal) ||
+               string.Equals(offset, "+0000", StringComparison.Ordinal) ||
+               string.Equals(offset, "-0000", StringComparison.Ordinal);
     }
 
     private static string? FormatGuideTime(long? timestamp)

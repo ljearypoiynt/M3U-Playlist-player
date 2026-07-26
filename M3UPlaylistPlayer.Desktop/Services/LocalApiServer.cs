@@ -663,6 +663,7 @@ public sealed class LocalApiServer
                 sessionId = session.Id,
                 source = guideSource.Name,
                 guideUnavailable,
+                guideLoading = session.Client.IsXmltvGuideLoading,
                 count = guide.Count,
                 missingIds,
                 guide
@@ -920,6 +921,7 @@ public sealed class LocalApiServer
             {
                 source = guideSource.Name,
                 guideUnavailable,
+                guideLoading = _client.IsXmltvGuideLoading,
                 count = guide.Count,
                 missingIds,
                 guide
