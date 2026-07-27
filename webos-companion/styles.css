@@ -440,6 +440,44 @@ video {
   width: 100vw;
 }
 
+body.video-fullscreen .app {
+  display: block;
+}
+
+body.video-fullscreen .sidebar,
+body.video-fullscreen .guide-tabs,
+body.video-fullscreen .selection,
+body.video-fullscreen .grid,
+body.video-fullscreen .app-version {
+  display: none;
+}
+
+body.video-fullscreen .content,
+body.video-fullscreen .guide-header,
+body.video-fullscreen .preview {
+  background: #000;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  display: block;
+  height: 100vh;
+  inset: 0;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  overflow: hidden;
+  padding: 0;
+  position: fixed;
+  width: 100vw;
+  z-index: 100;
+}
+
+body.video-fullscreen .preview video {
+  height: 100vh;
+  object-fit: contain;
+  width: 100vw;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

@@ -1,6 +1,6 @@
 {
   "id": "com.local.iptvsidekick",
-  "version": "0.1.48",
+  "version": "0.1.49",
   "vendor": "Local",
   "type": "web",
   "main": "index.html",
