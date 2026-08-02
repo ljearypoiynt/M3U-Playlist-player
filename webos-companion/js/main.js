@@ -131,7 +131,8 @@ els.setupScreen.addEventListener('focusout', function () {
   }, 80);
 });
 els.search.addEventListener('input', function () {
-  loadMedia();
+  window.clearTimeout(mediaSearchTimer);
+  mediaSearchTimer = window.setTimeout(loadMedia, 360);
 });
 if (els.play) {
   els.play.addEventListener('click', function () {

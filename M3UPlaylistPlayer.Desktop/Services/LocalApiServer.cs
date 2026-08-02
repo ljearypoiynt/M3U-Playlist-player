@@ -1207,7 +1207,9 @@ public sealed class LocalApiServer
 
         return terms.Length == 0
             ? null
-            : new Regex(string.Join(".*", terms), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            : new Regex(
+                "^" + string.Concat(terms.Select(term => $"(?=.*{term})")) + ".*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static IReadOnlyList<string> ReadExcludedGroups(HttpContext context, PlaybackSession? session = null, MediaKind? kind = null)

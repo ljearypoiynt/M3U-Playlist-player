@@ -44,6 +44,10 @@ public sealed class XtreamClient
     private IReadOnlyList<MediaItem>? _m3uMediaCache;
     private DateTimeOffset _m3uMediaExpires = DateTimeOffset.MinValue;
     private Task<IReadOnlyList<MediaItem>>? _m3uMediaLoad;
+    private IReadOnlyList<MediaItem>? _movieMediaCache;
+    private DateTimeOffset _movieMediaExpires = DateTimeOffset.MinValue;
+    private Task<IReadOnlyList<MediaItem>>? _movieMediaLoad;
+    private Task? _movieMediaObserver;
 
     public XtreamClient(XtreamSettings settings)
     {
@@ -802,22 +806,7 @@ public sealed class XtreamClient
         IReadOnlyDictionary<string, string> categoryNames,
         CancellationToken cancellationToken)
     {
-        var streams = await GetJsonAsync<List<XtreamMovieStream>>(BuildApiUrl("get_vod_streams"), cancellationToken) ?? [];
-        return streams
-            .Where(stream => stream.StreamId is not null && !string.IsNullOrWhiteSpace(stream.Name))
-            .Select(stream =>
-            {
-                var group = stream.CategoryId is not null && categoryNames.TryGetValue(stream.CategoryId, out var category)
-                    ? category
-                    : string.Empty;
-                var extension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "mp4" : stream.ContainerExtension.Trim('.');
-                var url = $"{_settings.Origin}/movie/{Uri.EscapeDataString(_settings.Username)}/{Uri.EscapeDataString(_settings.Password)}/{stream.StreamId}.{extension}";
-
-                return new MediaItem($"movie-{stream.StreamId}", MediaKind.Movies, stream.Name!, group, url, stream.StreamIcon, null);
-            })
-            .OrderBy(item => item.Group)
-            .ThenBy(item => item.Name)
-            .ToArray();
+        return await GetMovieCatalogAsync(categoryNames, cancellationToken);
     }
 
     private async Task<MediaPage> GetMoviePageAsync(
@@ -836,6 +825,19 @@ public sealed class XtreamClient
         var queryRegex = BuildSearchRegex(query);
         var excludedSet = ToExcludedGroupSet(excludedGroups);
         var selectedSet = ToGroupSet(selectedGroups);
+
+        TryStartMovieCatalogLoad(categoryNames, out _);
+        if (TryGetCachedMovieCatalog(out var cachedMovies))
+        {
+            return CreateFilteredPage(cachedMovies, queryRegex, group, region, excludedSet, selectedSet, skip, limit);
+        }
+
+        if (queryRegex is not null)
+        {
+            var catalog = await GetMovieCatalogAsync(categoryNames, cancellationToken);
+            return CreateFilteredPage(catalog, queryRegex, group, region, excludedSet, selectedSet, skip, limit);
+        }
+
         await using var stream = await _httpClient.GetStreamAsync(BuildApiUrl("get_vod_streams"), cancellationToken);
 
         await foreach (var movieStream in JsonSerializer.DeserializeAsyncEnumerable<XtreamMovieStream>(stream, JsonOptions, cancellationToken))
@@ -864,6 +866,132 @@ public sealed class XtreamClient
         }
 
         return new MediaPage(items, matched, HasMore: false);
+    }
+
+    private static MediaPage CreateFilteredPage(
+        IReadOnlyList<MediaItem> source,
+        Regex? queryRegex,
+        string? group,
+        string? region,
+        IReadOnlySet<string>? excludedSet,
+        IReadOnlySet<string>? selectedSet,
+        int skip,
+        int limit)
+    {
+        var filtered = source
+            .Where(item => Matches(item, queryRegex, group, region, excludedSet, selectedSet))
+            .ToArray();
+        var pageItems = filtered
+            .Skip(skip)
+            .Take(limit)
+            .ToArray();
+
+        return new MediaPage(pageItems, filtered.Length, skip + pageItems.Length < filtered.Length);
+    }
+
+    private async Task<IReadOnlyList<MediaItem>> GetMovieCatalogAsync(
+        IReadOnlyDictionary<string, string> categoryNames,
+        CancellationToken cancellationToken)
+    {
+        TryStartMovieCatalogLoad(categoryNames, out _);
+
+        Task<IReadOnlyList<MediaItem>>? loadTask;
+        lock (_guideLock)
+        {
+            if (_movieMediaCache is not null && _movieMediaExpires > DateTimeOffset.UtcNow)
+            {
+                return _movieMediaCache;
+            }
+
+            loadTask = _movieMediaLoad;
+        }
+
+        return loadTask is null
+            ? []
+            : await loadTask.WaitAsync(cancellationToken);
+    }
+
+    private bool TryGetCachedMovieCatalog(out IReadOnlyList<MediaItem> items)
+    {
+        lock (_guideLock)
+        {
+            if (_movieMediaCache is not null && _movieMediaExpires > DateTimeOffset.UtcNow)
+            {
+                items = _movieMediaCache;
+                return true;
+            }
+        }
+
+        items = [];
+        return false;
+    }
+
+    private bool TryStartMovieCatalogLoad(
+        IReadOnlyDictionary<string, string> categoryNames,
+        out string state)
+    {
+        lock (_guideLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_movieMediaCache is not null && _movieMediaExpires > now)
+            {
+                state = "cache-ready";
+                return false;
+            }
+
+            if (_movieMediaLoad is { IsCompleted: false })
+            {
+                state = "already-loading";
+                return true;
+            }
+
+            _movieMediaLoad = LoadMovieCatalogAsync(categoryNames, CancellationToken.None);
+            _movieMediaObserver = ObserveMovieCatalogLoadAsync(_movieMediaLoad);
+            state = "started";
+            return true;
+        }
+    }
+
+    private async Task<IReadOnlyList<MediaItem>> LoadMovieCatalogAsync(
+        IReadOnlyDictionary<string, string> categoryNames,
+        CancellationToken cancellationToken)
+    {
+        var streams = await GetJsonAsync<List<XtreamMovieStream>>(BuildApiUrl("get_vod_streams"), cancellationToken) ?? [];
+        return streams
+            .Where(stream => stream.StreamId is not null && !string.IsNullOrWhiteSpace(stream.Name))
+            .Select(stream => CreateMovieItem(stream, categoryNames))
+            .OrderBy(item => item.Group)
+            .ThenBy(item => item.Name)
+            .ToArray();
+    }
+
+    private async Task ObserveMovieCatalogLoadAsync(Task<IReadOnlyList<MediaItem>> loadTask)
+    {
+        try
+        {
+            var items = await loadTask.ConfigureAwait(false);
+            lock (_guideLock)
+            {
+                _movieMediaCache = items;
+                _movieMediaExpires = DateTimeOffset.UtcNow.AddMinutes(20);
+                if (ReferenceEquals(_movieMediaLoad, loadTask))
+                {
+                    _movieMediaLoad = null;
+                    _movieMediaObserver = null;
+                }
+            }
+        }
+        catch
+        {
+            lock (_guideLock)
+            {
+                if (ReferenceEquals(_movieMediaLoad, loadTask))
+                {
+                    _movieMediaLoad = null;
+                    _movieMediaObserver = null;
+                }
+            }
+        }
     }
 
     private async Task<GuideInfo> GetShortGuideAsync(int streamId, CancellationToken cancellationToken)
@@ -1517,7 +1645,9 @@ public sealed class XtreamClient
 
         return terms.Length == 0
             ? null
-            : new Regex(string.Join(".*", terms), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            : new Regex(
+                "^" + string.Concat(terms.Select(term => $"(?=.*{term})")) + ".*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static IReadOnlySet<string>? ToExcludedGroupSet(IReadOnlyCollection<string>? excludedGroups)
