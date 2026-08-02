@@ -79,7 +79,6 @@ var pageSize = 240;
 var editorPageSize = 120;
 var guidePageSize = 12;
 var listSearchTimer = null;
-var mediaSearchTimer = null;
 
 var els = {
   playlistUrl: document.getElementById('playlistUrl'),
@@ -87,6 +86,7 @@ var els = {
   liveMode: document.getElementById('liveMode'),
   moviesMode: document.getElementById('moviesMode'),
   search: document.getElementById('search'),
+  searchGo: document.getElementById('searchGo'),
   curatedListSelect: document.getElementById('curatedListSelect'),
   categorySelect: document.getElementById('categorySelect'),
   newList: document.getElementById('newList'),

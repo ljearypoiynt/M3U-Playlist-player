@@ -130,9 +130,14 @@ els.setupScreen.addEventListener('focusout', function () {
     }
   }, 80);
 });
-els.search.addEventListener('input', function () {
-  window.clearTimeout(mediaSearchTimer);
-  mediaSearchTimer = window.setTimeout(loadMedia, 360);
+els.search.addEventListener('keydown', function (event) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    loadMedia();
+  }
+});
+els.searchGo.addEventListener('click', function () {
+  loadMedia();
 });
 if (els.play) {
   els.play.addEventListener('click', function () {

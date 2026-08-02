@@ -85,6 +85,18 @@ h1 {
   font-weight: 700;
 }
 
+.search-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 82px;
+}
+
+.search-go {
+  color: #f4f4f4;
+  min-height: 62px;
+  padding: 0 10px;
+}
+
 input,
 select,
 button {
