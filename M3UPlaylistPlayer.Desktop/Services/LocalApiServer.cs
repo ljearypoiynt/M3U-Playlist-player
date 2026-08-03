@@ -23,6 +23,7 @@ public sealed class LocalApiServer
     private readonly CuratedListStore _curatedListStore = new();
     private readonly Dictionary<MediaKind, IReadOnlyList<MediaItem>> _cache = [];
     private readonly Dictionary<MediaKind, Task<IReadOnlyList<MediaItem>>> _loads = [];
+    private readonly Dictionary<string, PendingGuideResponse> _pendingGuideResponses = [];
     private readonly object _cacheLock = new();
     private readonly object _remoteLock = new();
     private long _remoteCommandSequence;
@@ -637,13 +638,33 @@ public sealed class LocalApiServer
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(300)
                 .ToArray();
+            var liveGuideIds = requestedIds
+                .Where(id => id.StartsWith("live-", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
             var guideSource = ParseGuideSource(source);
             IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide;
             string[] missingIds;
             var guideUnavailable = false;
+            var guideCacheKey = BuildPendingGuideCacheKey($"session:{session.Id}", guideSource.Name, liveGuideIds);
+            if (TryGetPendingGuideResponse(guideCacheKey, out var pendingGuide))
+            {
+                return Results.Json(new
+                {
+                    sessionId = session.Id,
+                    source = guideSource.Name,
+                    guideUnavailable,
+                    guideLoading = pendingGuide.GuideLoading,
+                    count = pendingGuide.Guide.Count,
+                    missingIds = pendingGuide.MissingIds,
+                    guide = pendingGuide.Guide
+                });
+            }
+
             try
             {
-                guide = await session.Client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+                guide = liveGuideIds.Length == 0
+                    ? CreateEmptyGuide(requestedIds)
+                    : await session.Client.GetGuideAsync(liveGuideIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
                 missingIds = GetMissingGuideIds(guide);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -657,13 +678,15 @@ public sealed class LocalApiServer
                 missingIds = requestedIds;
                 LogGuideEndpointFailure(guideSource.Name, ex);
             }
+            var guideLoading = session.Client.IsXmltvGuideLoading;
+            CachePendingGuideResponse(guideCacheKey, guideSource.Name, guide, missingIds, guideLoading);
 
             return Results.Json(new
             {
                 sessionId = session.Id,
                 source = guideSource.Name,
                 guideUnavailable,
-                guideLoading = session.Client.IsXmltvGuideLoading,
+                guideLoading,
                 count = guide.Count,
                 missingIds,
                 guide
@@ -896,13 +919,32 @@ public sealed class LocalApiServer
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(300)
                 .ToArray();
+            var liveGuideIds = requestedIds
+                .Where(id => id.StartsWith("live-", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
             var guideSource = ParseGuideSource(source);
             IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide;
             string[] missingIds;
             var guideUnavailable = false;
+            var guideCacheKey = BuildPendingGuideCacheKey("legacy", guideSource.Name, liveGuideIds);
+            if (TryGetPendingGuideResponse(guideCacheKey, out var pendingGuide))
+            {
+                return Results.Json(new
+                {
+                    source = guideSource.Name,
+                    guideUnavailable,
+                    guideLoading = pendingGuide.GuideLoading,
+                    count = pendingGuide.Guide.Count,
+                    missingIds = pendingGuide.MissingIds,
+                    guide = pendingGuide.Guide
+                });
+            }
+
             try
             {
-                guide = await _client.GetGuideAsync(requestedIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
+                guide = liveGuideIds.Length == 0
+                    ? CreateEmptyGuide(requestedIds)
+                    : await _client.GetGuideAsync(liveGuideIds, guideSource.IncludeMainGuide, guideSource.IncludeShortGuide, token);
                 missingIds = GetMissingGuideIds(guide);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -916,12 +958,14 @@ public sealed class LocalApiServer
                 missingIds = requestedIds;
                 LogGuideEndpointFailure(guideSource.Name, ex);
             }
+            var guideLoading = _client.IsXmltvGuideLoading;
+            CachePendingGuideResponse(guideCacheKey, guideSource.Name, guide, missingIds, guideLoading);
 
             return Results.Json(new
             {
                 source = guideSource.Name,
                 guideUnavailable,
-                guideLoading = _client.IsXmltvGuideLoading,
+                guideLoading,
                 count = guide.Count,
                 missingIds,
                 guide
@@ -1272,6 +1316,55 @@ public sealed class LocalApiServer
             .Where(pair => IsMissingGuide(pair.Value))
             .Select(pair => pair.Key)
             .ToArray();
+    }
+
+    private static string BuildPendingGuideCacheKey(string scope, string source, IReadOnlyCollection<string> ids)
+    {
+        return $"{scope}|{source}|{string.Join(",", ids.Order(StringComparer.OrdinalIgnoreCase))}";
+    }
+
+    private bool TryGetPendingGuideResponse(string cacheKey, out PendingGuideResponse response)
+    {
+        lock (_cacheLock)
+        {
+            if (_pendingGuideResponses.TryGetValue(cacheKey, out response!) &&
+                response.ExpiresAt > DateTimeOffset.UtcNow)
+            {
+                return true;
+            }
+
+            if (response is not null)
+            {
+                _pendingGuideResponses.Remove(cacheKey);
+            }
+        }
+
+        response = default!;
+        return false;
+    }
+
+    private void CachePendingGuideResponse(
+        string cacheKey,
+        string source,
+        IReadOnlyDictionary<string, XtreamClient.GuideInfo> guide,
+        IReadOnlyCollection<string> missingIds,
+        bool guideLoading)
+    {
+        if (!string.Equals(source, "main", StringComparison.OrdinalIgnoreCase) ||
+            guide.Count == 0 ||
+            missingIds.Count != guide.Count)
+        {
+            return;
+        }
+
+        lock (_cacheLock)
+        {
+            _pendingGuideResponses[cacheKey] = new PendingGuideResponse(
+                guide,
+                missingIds.ToArray(),
+                DateTimeOffset.UtcNow.AddSeconds(6),
+                guideLoading);
+        }
     }
 
     private static IReadOnlyDictionary<string, XtreamClient.GuideInfo> CreateEmptyGuide(IReadOnlyCollection<string> ids)
@@ -1639,5 +1732,11 @@ public sealed class LocalApiServer
         string? Kind,
         string? Name,
         IReadOnlyList<string>? ItemIds);
+
+    private sealed record PendingGuideResponse(
+        IReadOnlyDictionary<string, XtreamClient.GuideInfo> Guide,
+        string[] MissingIds,
+        DateTimeOffset ExpiresAt,
+        bool GuideLoading);
 
 }

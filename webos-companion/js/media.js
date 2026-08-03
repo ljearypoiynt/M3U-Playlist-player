@@ -316,7 +316,7 @@ function requestGuideChunk(ids, offset, requestId, source) {
   var chunk;
   var guideSource = source || 'main';
 
-  if (requestId !== state.requestId || offset >= ids.length) {
+  if (state.kind !== 'live' || requestId !== state.requestId || offset >= ids.length) {
     return;
   }
 
@@ -334,7 +334,7 @@ function requestGuideChunk(ids, offset, requestId, source) {
       var info;
       var isMissing;
 
-      if (requestId !== state.requestId) {
+      if (state.kind !== 'live' || requestId !== state.requestId) {
         return;
       }
 
@@ -373,6 +373,10 @@ function requestGuideChunk(ids, offset, requestId, source) {
         }
       }
 
+      if (state.kind !== 'live') {
+        return;
+      }
+
       if (guideSource === 'main' && guideLoading) {
         scheduleGuideRetry(chunk, requestId);
       } else if (guideSource === 'main' && shortIds.length > 0) {
@@ -387,7 +391,9 @@ function requestGuideChunk(ids, offset, requestId, source) {
       }
     })
     .then(function () {
-      requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
+      if (state.kind === 'live') {
+        requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
+      }
     });
 }
 
@@ -413,7 +419,7 @@ function scheduleGuideRetry(ids, requestId) {
     var retryIndex;
     var retryId;
 
-    if (requestId !== state.requestId) {
+    if (state.kind !== 'live' || requestId !== state.requestId) {
       return;
     }
 

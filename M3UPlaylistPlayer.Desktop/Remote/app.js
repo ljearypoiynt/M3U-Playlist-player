@@ -700,26 +700,33 @@ function sendCommand(command) {
 function loadGuideForItems(items, requestId) {
   var ids = [];
   var index;
+  var id;
 
   if (state.kind !== 'live') {
     return;
   }
 
   for (index = 0; index < items.length; index += 1) {
-    if (items[index].id && !state.guideLoaded[items[index].id] && !state.guideLoading[items[index].id]) {
-      ids.push(items[index].id);
-      state.guideLoading[items[index].id] = true;
+    id = items[index].id;
+    if (id &&
+        id.indexOf('live-') === 0 &&
+        !state.guideLoaded[id] &&
+        !state.guideLoading[id]) {
+      ids.push(id);
+      state.guideLoading[id] = true;
     }
   }
 
-  requestGuideChunk(ids, 0, requestId, 'main');
+  if (ids.length > 0) {
+    requestGuideChunk(ids, 0, requestId, 'main');
+  }
 }
 
 function requestGuideChunk(ids, offset, requestId, source) {
   var chunk;
   var guideSource = source || 'main';
 
-  if (requestId !== state.requestId || offset >= ids.length) {
+  if (state.kind !== 'live' || requestId !== state.requestId || offset >= ids.length) {
     return;
   }
 
@@ -735,7 +742,7 @@ function requestGuideChunk(ids, offset, requestId, source) {
       var info;
       var isMissing;
 
-      if (requestId !== state.requestId) {
+      if (state.kind !== 'live' || requestId !== state.requestId) {
         return;
       }
 
@@ -764,7 +771,7 @@ function requestGuideChunk(ids, offset, requestId, source) {
         }
       }
 
-      if (guideSource === 'main' && shortIds.length > 0) {
+      if (state.kind === 'live' && guideSource === 'main' && shortIds.length > 0) {
         requestGuideChunk(shortIds, 0, requestId, 'short');
       }
     })
@@ -776,7 +783,9 @@ function requestGuideChunk(ids, offset, requestId, source) {
       }
     })
     .then(function () {
-      requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
+      if (state.kind === 'live') {
+        requestGuideChunk(ids, offset + guidePageSize, requestId, guideSource);
+      }
     });
 }
 
